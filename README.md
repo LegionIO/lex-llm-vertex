@@ -2,7 +2,7 @@
 
 Google Cloud Vertex AI provider extension for `Legion::Extensions::Llm`.
 
-This gem adds a hosted Vertex AI provider surface for Legion LLM routing without depending on the old `legion-llm` gem. It keeps discovery offline by default, preserves full Vertex publisher model resource names for routing, and exposes project/location instance metadata for multi-region provider fleets.
+This gem adds a hosted Vertex AI provider surface for Legion LLM routing without depending on the old `legion-llm` gem. It keeps discovery offline by default, preserves full Vertex publisher model resource names for routing, and exposes project/location instance metadata for multi-region provider fleets. It requires `lex-llm >= 0.1.5` for the shared model offering, alias, readiness, and fleet lane contract.
 
 ## Install
 
