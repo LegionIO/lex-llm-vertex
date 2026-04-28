@@ -37,6 +37,8 @@ module Legion
           MODEL_FAMILIES = STATIC_MODELS.to_h { |entry| [entry.fetch(:model), entry.fetch(:model_family)] }.freeze
 
           class << self
+            attr_writer :registry_publisher
+
             def slug = 'vertex'
 
             def configuration_options
@@ -53,6 +55,10 @@ module Legion
 
             def configuration_requirements = []
             def capabilities = Capabilities
+
+            def registry_publisher
+              @registry_publisher ||= RegistryPublisher.new
+            end
 
             def resolve_model_id(model_id, config: nil)
               configured_aliases = config.respond_to?(:vertex_model_aliases) ? config.vertex_model_aliases : nil
@@ -112,7 +118,9 @@ module Legion
 
             response = connection.get(models_url)
             models = response.body['publisherModels'] || response.body['models'] || []
-            models.map { |model| offering_from_live_model(model) }
+            models.map { |model| offering_from_live_model(model) }.tap do |offerings|
+              self.class.registry_publisher.publish_offerings_async(offerings, readiness: readiness(live: false))
+            end
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -151,7 +159,10 @@ module Legion
           end
 
           def readiness(live: false)
-            health(live:).merge(local: false, remote: true, api_base: api_base, endpoints: endpoint_manifest)
+            health(live:).merge(local: false, remote: true, api_base: api_base,
+                                endpoints: endpoint_manifest).tap do |metadata|
+              self.class.registry_publisher.publish_readiness_async(metadata) if live
+            end
           end
 
           def chat(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {})

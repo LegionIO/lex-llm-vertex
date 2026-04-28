@@ -2,6 +2,8 @@
 
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/vertex/provider'
+require 'legion/extensions/llm/vertex/registry_event_builder'
+require 'legion/extensions/llm/vertex/registry_publisher'
 require 'legion/extensions/llm/vertex/version'
 
 module Legion

@@ -64,6 +64,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   let(:connection) { FakeVertexConnection.new }
   let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
   let(:model) { Legion::Extensions::Llm::Model::Info.new(id: 'gemini-2.5-flash', provider: :vertex) }
+  let(:registry_publisher) { instance_double(described_class::RegistryPublisher) }
 
   before do
     Legion::Extensions::Llm.configure do |config|
@@ -135,10 +136,33 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   end
 
   it 'builds live offerings from publisher model listings' do
+    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
+    allow(registry_publisher).to receive(:publish_offerings_async)
+
     offerings = provider.discover_offerings(live: true)
 
     expect(connection.gets).to eq(['projects/test-project/locations/us-central1/publishers/google/models'])
     expect(offerings.first.model).to eq(resource_name('google', 'gemini-2.5-flash'))
+    expect(registry_publisher).to have_received(:publish_offerings_async)
+      .with(offerings, readiness: hash_including(provider: :vertex, live: false))
+  end
+
+  it 'publishes live readiness metadata asynchronously through the registry publisher' do
+    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
+    allow(registry_publisher).to receive(:publish_readiness_async)
+
+    readiness = provider.readiness(live: true)
+
+    expect(registry_publisher).to have_received(:publish_readiness_async).with(readiness)
+  end
+
+  it 'builds sanitized lex-llm registry events for Vertex offering availability' do
+    offering = provider.discover_offerings(live: false).first
+    events = capture_registry_events([offering], readiness: { ready: true })
+
+    expect(events.first.to_h).to include(event_type: :offering_available)
+    expect(events.first.to_h.dig(:offering, :provider_family)).to eq(:vertex)
+    expect(events.first.to_h.dig(:offering, :model)).to eq(resource_name('google', 'gemini-2.5-flash'))
   end
 
   it 'renders generateContent requests and parses assistant responses' do
@@ -214,5 +238,15 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
   def resource_name(publisher, model)
     "projects/test-project/locations/us-central1/publishers/#{publisher}/models/#{model}"
+  end
+
+  def capture_registry_events(offerings, readiness:)
+    publisher = described_class::RegistryPublisher.new
+    events = []
+    allow(publisher).to receive(:publishing_available?).and_return(true)
+    allow(publisher).to receive(:publish_event) { |event| events << event }
+    allow(Thread).to receive(:new).and_yield
+    publisher.publish_offerings_async(offerings, readiness:)
+    events
   end
 end
