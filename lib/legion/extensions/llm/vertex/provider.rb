@@ -213,8 +213,8 @@ module Legion
             parse_embedding_response(response, model: model_id)
           end
 
-          def complete(messages, tools:, temperature:, model:, params: {}, schema: nil, thinking: nil, tool_prefs: nil,
-                       &)
+          def complete(messages, tools:, temperature:, model:, params: {}, headers: {}, schema: nil, thinking: nil, # rubocop:disable Lint/UnusedMethodArgument
+                       tool_prefs: nil, &)
             payload = params.dup
             payload[:generationConfig] = Utils.deep_merge(payload[:generationConfig] || {},
                                                           generation_config(temperature, schema, thinking))

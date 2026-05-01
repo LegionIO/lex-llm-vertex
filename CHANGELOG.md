@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.4] - 2026-04-30
+
+- Add headers: parameter to complete method for base provider contract compliance
+
 ## 0.1.3 - 2026-04-28
 
 - Remove the unused runtime `legion/settings` require while preserving the gemspec dependency.
