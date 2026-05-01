@@ -251,6 +251,70 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     end.to raise_error(NotImplementedError, /not standardized/)
   end
 
+  describe '.discover_instances' do
+    before do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting).and_return(nil)
+    end
+
+    it 'returns an empty hash when no settings are configured' do
+      expect(described_class.discover_instances).to eq({})
+    end
+
+    it 'discovers a :settings instance when project and access_token are present' do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex)
+        .and_return({ project: 'my-project', access_token: 'tok-123', location: 'us-east1' })
+
+      instances = described_class.discover_instances
+
+      expect(instances[:settings]).to include(project: 'my-project', access_token: 'tok-123', tier: :cloud)
+    end
+
+    it 'discovers a :settings instance when project and credentials are present' do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex)
+        .and_return({ project: 'my-project', credentials: '/path/to/sa.json' })
+
+      instances = described_class.discover_instances
+
+      expect(instances[:settings]).to include(project: 'my-project', credentials: '/path/to/sa.json', tier: :cloud)
+    end
+
+    it 'skips the default instance when project is missing' do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex)
+        .and_return({ access_token: 'tok-123' })
+
+      expect(described_class.discover_instances).not_to have_key(:settings)
+    end
+
+    it 'skips the default instance when no credentials are provided' do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex)
+        .and_return({ project: 'my-project' })
+
+      expect(described_class.discover_instances).not_to have_key(:settings)
+    end
+
+    it 'discovers named instances from the instances sub-key' do
+      cfg = { instances: { prod: { project: 'prod-proj', access_token: 'tok-prod' } } }
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex).and_return(cfg)
+
+      instances = described_class.discover_instances
+
+      expect(instances[:prod]).to include(project: 'prod-proj', access_token: 'tok-prod', tier: :cloud)
+    end
+
+    it 'skips named instances without valid credentials' do
+      cfg = { instances: { bad: { project: 'proj' } } }
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex).and_return(cfg)
+
+      expect(described_class.discover_instances).not_to have_key(:bad)
+    end
+  end
+
   def vertex_url(publisher, model, action)
     "#{resource_name(publisher, model)}:#{action}"
   end
