@@ -6,7 +6,7 @@ module Legion
       module Vertex
         # Best-effort publisher for Vertex provider availability events.
         class RegistryPublisher
-          include Legion::Logging::Helper
+          include Legion::Logging::Helper if defined?(Legion::Logging::Helper)
 
           APP_ID = 'lex-llm-vertex'
 
