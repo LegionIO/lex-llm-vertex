@@ -10,7 +10,7 @@ module Legion
           module Messages
             # Publishes lex-llm RegistryEvent envelopes to the llm.registry exchange.
             class RegistryEvent < ::Legion::Transport::Message
-              include Legion::Logging::Helper if defined?(Legion::Logging::Helper)
+              include Legion::Logging::Helper
 
               def initialize(event:, **options)
                 super(**event.to_h.merge(options))
