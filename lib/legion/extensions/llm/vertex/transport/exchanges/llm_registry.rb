@@ -8,6 +8,8 @@ module Legion
           module Exchanges
             # Topic exchange for Vertex provider availability events.
             class LlmRegistry < ::Legion::Transport::Exchange
+              include Legion::Logging::Helper
+
               def exchange_name
                 'llm.registry'
               end

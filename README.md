@@ -48,6 +48,18 @@ provider.count_tokens(messages, model: model)
 
 `discover_offerings(live: false)` returns a conservative static catalog for routing defaults and unit tests. `discover_offerings(live: true)` calls the Vertex publisher models listing endpoint and maps returned model data into `Legion::Extensions::Llm::Routing::ModelOffering` records.
 
+## Static Model Catalog
+
+| Model | Alias | Publisher | Family | API Mode |
+|-------|-------|-----------|--------|----------|
+| gemini-2.5-flash | gemini-flash | google | gemini | generateContent |
+| gemini-2.5-pro | gemini-pro | google | gemini | generateContent |
+| gemini-embedding-001 | gemini-embedding | google | gemini | predict (embedding) |
+| text-embedding-005 | text-embedding | google | gemini | predict (embedding) |
+| claude-sonnet-4-5 | claude-sonnet | anthropic | anthropic | rawPredict |
+| mistral-medium-3 | mistral-medium | mistralai | mistral | rawPredict |
+| llama-4-maverick | llama-4-maverick | meta | meta | rawPredict |
+
 ## Model Offerings
 
 Every offering uses:
@@ -60,6 +72,30 @@ Every offering uses:
 
 Known aliases are intentionally small and configurable. For example, `gemini-flash` resolves to `gemini-2.5-flash`, while the offering preserves `projects/{project}/locations/{location}/publishers/google/models/gemini-2.5-flash`.
 
+## Registry Events
+
+When transport is available, the `RegistryPublisher` publishes best-effort readiness and offering availability events to the `llm.registry` topic exchange using `lex-llm` registry envelopes. Events are published asynchronously in background threads and never block the caller.
+
+## File Map
+
+| Path | Purpose |
+|------|---------|
+| `lib/legion/extensions/llm/vertex.rb` | Namespace module, default settings, provider registration |
+| `lib/legion/extensions/llm/vertex/provider.rb` | Vertex AI provider: chat, stream, embed, count_tokens, health, discovery |
+| `lib/legion/extensions/llm/vertex/registry_publisher.rb` | Async best-effort llm.registry event publisher |
+| `lib/legion/extensions/llm/vertex/registry_event_builder.rb` | Builds sanitized registry event envelopes |
+| `lib/legion/extensions/llm/vertex/version.rb` | `VERSION` constant |
+| `lib/legion/extensions/llm/vertex/transport/exchanges/llm_registry.rb` | `llm.registry` topic exchange definition |
+| `lib/legion/extensions/llm/vertex/transport/messages/registry_event.rb` | Transport message for registry events |
+
+## Observability
+
+All modules and classes use `Legion::Logging::Helper` for structured logging:
+
+- **Info-level logging** on key provider actions: `chat`, `stream`, `embed`, `count_tokens`, `discover_offerings`, `health`, and registry publish operations
+- **Every rescue block** calls `handle_exception(e, level:, handled:, operation:)` with dot-separated operation names (e.g. `vertex.provider.health`, `vertex.registry.publish_event`)
+- **Level conventions**: `:warn` for recoverable failures, `:error` for unexpected errors, `:debug` for expected/best-effort failures (transport unavailable, etc.)
+
 ## API Contract
 
 The implementation is intentionally limited to Vertex AI REST surfaces documented by Google Cloud:
@@ -71,7 +107,20 @@ The implementation is intentionally limited to Vertex AI REST surfaces documente
 
 Provider-specific request bodies are not guessed. Partner raw-predict chat requests use the message shape documented for those partner model endpoints; embeddings are only implemented for documented Vertex text embedding models.
 
-Google Cloud references:
+## Development
+
+```bash
+bundle install
+bundle exec rspec       # 0 failures
+bundle exec rubocop -A  # auto-fix
+bundle exec rubocop     # lint check
+```
+
+## License
+
+Apache-2.0
+
+## References
 
 - [Vertex AI GenAI REST API](https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest)
 - [Generate content with the Gemini API in Vertex AI](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference)

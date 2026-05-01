@@ -6,6 +6,8 @@ module Legion
       module Vertex
         # Builds sanitized lex-llm registry envelopes for Vertex provider state.
         class RegistryEventBuilder
+          include Legion::Logging::Helper
+
           def readiness(readiness)
             registry_event_class.public_send(
               readiness[:ready] ? :available : :unavailable,

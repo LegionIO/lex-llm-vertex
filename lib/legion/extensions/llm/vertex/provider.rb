@@ -113,11 +113,13 @@ module Legion
           end
 
           def discover_offerings(live: false, **filters)
+            log.info { "discovering offerings live=#{live} project=#{project} location=#{location}" }
             return static_offerings(**filters) unless live
 
             response = connection.get(models_url)
             models = response.body['publisherModels'] || response.body['models'] || []
             models.map { |model| offering_from_live_model(model) }.tap do |offerings|
+              log.info { "discovered #{offerings.size} live offering(s) from Vertex" }
               self.class.registry_publisher.publish_offerings_async(offerings, readiness: readiness(live: false))
             end
           end
@@ -140,6 +142,7 @@ module Legion
           end
 
           def health(live: false)
+            log.info { "checking health live=#{live} project=#{project} location=#{location}" }
             baseline = {
               provider: :vertex,
               project: project,
@@ -154,6 +157,7 @@ module Legion
             connection.get(models_url)
             baseline.merge(checked: true)
           rescue StandardError => e
+            handle_exception(e, level: :warn, handled: true, operation: 'vertex.provider.health')
             baseline.merge(checked: true, ready: false, error: e.class.name, message: e.message)
           end
 
@@ -166,6 +170,7 @@ module Legion
 
           def chat(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {})
             model_id = model_id(model)
+            log.info { "chat model=#{model_id} messages=#{messages.size}" }
             @model = model_id
             payload = Utils.deep_merge(chat_payload(messages, model: model_id, temperature:, max_tokens:, tools:,
                                                               tool_prefs:, stream: false), params)
@@ -175,6 +180,7 @@ module Legion
 
           def stream(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {})
             model_id = model_id(model)
+            log.info { "stream model=#{model_id} messages=#{messages.size}" }
             @model = model_id
             payload = Utils.deep_merge(chat_payload(messages, model: model_id, temperature:, max_tokens:, tools:,
                                                               tool_prefs:, stream: true), params)
@@ -186,6 +192,7 @@ module Legion
 
           def count_tokens(messages, model:, params: {})
             model_id = model_id(model)
+            log.info { "count_tokens model=#{model_id}" }
             unless generate_content_model?(model_id)
               return {
                 supported: false,
@@ -202,6 +209,7 @@ module Legion
 
           def embed(text, model:, dimensions: nil, task_type: nil, title: nil, params: {})
             model_id = model_id(model)
+            log.info { "embed model=#{model_id} inputs=#{Array(text).size}" }
             unless Capabilities.embeddings?(model_id)
               raise NotImplementedError, "Vertex embedding payload for #{model_id} is not standardized"
             end

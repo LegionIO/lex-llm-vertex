@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5] - 2026-04-30
+
+- Add `Legion::Logging::Helper` to all modules and classes for structured logging
+- Replace ad-hoc `log_publish_failure` with `handle_exception` in RegistryPublisher
+- Add `handle_exception` to every rescue block with correct level, handled, and operation
+- Add info-level logging for key provider actions: chat, stream, embed, count_tokens, discover_offerings, health
+- Update README to reflect current architecture, file map, and observability conventions
+
 ## [0.1.4] - 2026-04-30
 
 - Add headers: parameter to complete method for base provider contract compliance
