@@ -56,7 +56,7 @@ module Legion
             def capabilities = Capabilities
 
             def registry_publisher
-              @registry_publisher ||= RegistryPublisher.new
+              @registry_publisher ||= Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :vertex)
             end
 
             def resolve_model_id(model_id, config: nil)
@@ -112,16 +112,25 @@ module Legion
             "#{publisher_model_path(model)}:#{suffix}"
           end
 
+          def list_models
+            log.info { 'listing available Vertex models from static catalog' }
+            STATIC_MODELS.map { |entry| model_info_from_static(entry) }.tap do |models|
+              log.info { "discovered #{models.size} Vertex model(s); publishing to registry" }
+              self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
+            end
+          end
+
           def discover_offerings(live: false, **filters)
             log.info { "discovering offerings live=#{live} project=#{project} location=#{location}" }
             return static_offerings(**filters) unless live
 
             response = connection.get(models_url)
             models = response.body['publisherModels'] || response.body['models'] || []
-            models.map { |model| offering_from_live_model(model) }.tap do |offerings|
-              log.info { "discovered #{offerings.size} live offering(s) from Vertex" }
-              self.class.registry_publisher.publish_offerings_async(offerings, readiness: readiness(live: false))
-            end
+            offerings = models.map { |model| offering_from_live_model(model) }
+            log.info { "discovered #{offerings.size} live offering(s) from Vertex" }
+            model_infos = offerings.map { |o| model_info_from_offering(o) }
+            self.class.registry_publisher.publish_models_async(model_infos, readiness: readiness(live: false))
+            offerings
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -234,6 +243,34 @@ module Legion
           end
 
           private
+
+          def model_info_from_static(entry)
+            caps = default_capabilities(entry[:model], api: entry.fetch(:api, :generate_content))
+            Legion::Extensions::Llm::Model::Info.new(
+              id: entry[:model],
+              name: entry[:alias] || entry[:model],
+              provider: :vertex,
+              family: entry[:model_family].to_s,
+              capabilities: caps.map(&:to_s),
+              metadata: {
+                publisher: entry[:publisher],
+                project: project,
+                location: location,
+                api: entry.fetch(:api, :generate_content)
+              }.compact
+            )
+          end
+
+          def model_info_from_offering(offering)
+            Legion::Extensions::Llm::Model::Info.new(
+              id: offering.model,
+              name: offering.metadata[:alias] || offering.model,
+              provider: :vertex,
+              family: offering.metadata[:model_family].to_s,
+              capabilities: offering.capabilities.map(&:to_s),
+              metadata: offering.metadata
+            )
+          end
 
           def static_offerings(**filters)
             STATIC_MODELS.filter_map do |entry|

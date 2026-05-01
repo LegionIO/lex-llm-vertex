@@ -2,8 +2,6 @@
 
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/vertex/provider'
-require 'legion/extensions/llm/vertex/registry_event_builder'
-require 'legion/extensions/llm/vertex/registry_publisher'
 require 'legion/extensions/llm/vertex/version'
 
 module Legion
@@ -17,24 +15,17 @@ module Legion
         PROVIDER_FAMILY = :vertex
 
         def self.default_settings
-          ::Legion::Extensions::Llm.provider_settings(
-            family: PROVIDER_FAMILY,
-            discovery: { enabled: true, live: false, locations: %w[us-central1 us-east5 europe-west4] },
-            instance: {
-              endpoint: 'https://us-central1-aiplatform.googleapis.com/v1',
-              project: 'env://GOOGLE_CLOUD_PROJECT',
-              location: 'us-central1',
-              tier: :frontier,
-              transport: :http,
-              credentials: {
-                provider: 'google-application-default-credentials',
-                access_token: 'env://VERTEX_ACCESS_TOKEN',
-                credentials_file: 'env://GOOGLE_APPLICATION_CREDENTIALS'
-              },
-              usage: { inference: true, embedding: true, token_counting: true },
-              limits: { concurrency: 4 }
-            }
-          )
+          {
+            enabled: false,
+            default_model: nil,
+            project: nil,
+            location: 'us-central1',
+            model_whitelist: [],
+            model_blacklist: [],
+            model_cache_ttl: 3600,
+            tls: { enabled: false, verify: :peer },
+            instances: {}
+          }
         end
 
         def self.provider_class
@@ -45,5 +36,6 @@ module Legion
   end
 end
 
-Legion::Extensions::Llm::Provider.register(Legion::Extensions::Llm::Vertex::PROVIDER_FAMILY,
-                                           Legion::Extensions::Llm::Vertex::Provider)
+Legion::Extensions::Llm::Configuration.register_provider_options(
+  Legion::Extensions::Llm::Vertex::Provider.configuration_options
+)
