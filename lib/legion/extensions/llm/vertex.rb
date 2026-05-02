@@ -76,8 +76,4 @@ module Legion
   end
 end
 
-Legion::Extensions::Llm::Configuration.register_provider_options(
-  Legion::Extensions::Llm::Vertex::Provider.configuration_options
-)
-
 Legion::Extensions::Llm::Vertex.register_discovered_instances
