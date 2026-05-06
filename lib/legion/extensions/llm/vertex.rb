@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm'
+require 'legion/extensions/llm/vertex/fleet_responder'
 require 'legion/extensions/llm/vertex/provider'
 require 'legion/extensions/llm/vertex/version'
 
@@ -99,11 +100,19 @@ module Legion
           normalized.compact.except(:instances)
         end
 
-        private_class_method :discover_default_instance, :discover_named_instances, :vertex_credentials_present?,
-                             :normalize_instance_config
+        def self.register_provider_options
+          configuration = Legion::Extensions::Llm::Configuration
+          if configuration.respond_to?(:register_provider_options)
+            configuration.register_provider_options(Provider.configuration_options)
+          elsif configuration.respond_to?(:option, true)
+            Provider.configuration_options.each { |key| configuration.send(:option, key) }
+          end
+        end
 
-        Legion::Extensions::Llm::Configuration.register_provider_options(Provider.configuration_options) if
-          Legion::Extensions::Llm::Configuration.respond_to?(:register_provider_options)
+        private_class_method :discover_default_instance, :discover_named_instances, :vertex_credentials_present?,
+                             :normalize_instance_config, :register_provider_options
+
+        register_provider_options
       end
     end
   end

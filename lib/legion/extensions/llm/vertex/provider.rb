@@ -213,6 +213,12 @@ module Legion
             parse_chat_response(response, model: model_id)
           end
 
+          def stream_chat(messages:, model:, tools: {}, temperature: nil, max_tokens: nil, params: {}, headers: {},
+                          schema: nil, thinking: nil, tool_prefs: nil, &)
+            stream(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:, params:, headers:, schema:,
+                   thinking:, &)
+          end
+
           def count_tokens(
             messages:,
             model:,

@@ -3,6 +3,16 @@
 require 'spec_helper'
 
 module Legion
+  module LLM
+    module Fleet
+      unless const_defined?(:ProviderResponder, false)
+        class ProviderResponder
+          def self.enabled_for?(*); end
+        end
+      end
+    end
+  end
+
   module Extensions
     module Actors
       unless const_defined?(:Subscription, false)
@@ -19,6 +29,8 @@ require 'legion/extensions/llm/vertex/actors/fleet_worker'
 RSpec.describe Legion::Extensions::Llm::Vertex::Actor::FleetWorker do # rubocop:disable RSpec/SpecFilePathFormat
   subject(:actor) { described_class.new }
 
+  let(:responder) { Legion::LLM::Fleet::ProviderResponder }
+
   it 'uses the provider-owned fleet runner' do
     expect(actor.runner_class).to eq('Legion::Extensions::Llm::Vertex::Runners::FleetWorker')
     expect(actor.runner_function).to eq('handle_fleet_request')
@@ -28,7 +40,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::FleetWorker do # rubocop:
   it 'is enabled only when at least one provider instance responds to fleet requests' do
     allow(Legion::Extensions::Llm::Vertex).to receive(:discover_instances)
       .and_return(local: { fleet: { respond_to_requests: true } })
+    allow(responder).to receive(:enabled_for?).and_return(true)
 
     expect(actor.enabled?).to be(true)
+    expect(responder).to have_received(:enabled_for?).with(local: { fleet: { respond_to_requests: true } })
   end
 end

@@ -2,7 +2,7 @@
 
 Google Cloud Vertex AI provider extension for `Legion::Extensions::Llm`.
 
-This gem adds a hosted Vertex AI provider surface for Legion LLM routing. It keeps discovery offline by default, preserves full Vertex publisher model resource names for routing, and exposes project/location instance metadata for multi-region provider fleets. It requires `lex-llm >= 0.4.0` for the shared provider contract, response normalization, model offering, readiness, and fleet envelope contract.
+This gem adds a hosted Vertex AI provider surface for Legion LLM routing. It keeps discovery offline by default, preserves full Vertex publisher model resource names for routing, and exposes project/location instance metadata for multi-region provider fleets. It installs against the current published `lex-llm` and `legion-llm` gems, while the `Gemfile` can use local sibling checkouts for unreleased provider-contract testing.
 
 ## Install
 
@@ -35,6 +35,8 @@ Legion::Extensions::Llm::Vertex.default_settings
 ## Fleet Responder
 
 Provider instances can opt in to consuming Legion LLM fleet requests. The provider-owned fleet actor only starts when at least one configured instance enables `respond_to_requests`.
+
+Fleet request execution is delegated to `Legion::LLM::Fleet::ProviderResponder` when the installed `legion-llm` exposes that helper. If the helper is not available, the actor remains disabled and normal provider discovery, health, chat, streaming, embeddings, and token counting continue to load.
 
 ```yaml
 extensions:
@@ -101,11 +103,10 @@ When transport is available, the `RegistryPublisher` publishes best-effort readi
 |------|---------|
 | `lib/legion/extensions/llm/vertex.rb` | Namespace module, default settings, provider registration |
 | `lib/legion/extensions/llm/vertex/provider.rb` | Vertex AI provider: chat, stream, embed, count_tokens, health, discovery |
-| `lib/legion/extensions/llm/vertex/registry_publisher.rb` | Async best-effort llm.registry event publisher |
-| `lib/legion/extensions/llm/vertex/registry_event_builder.rb` | Builds sanitized registry event envelopes |
+| `lib/legion/extensions/llm/vertex/fleet_responder.rb` | Optional bridge to the shared `legion-llm` provider fleet responder |
+| `lib/legion/extensions/llm/vertex/actors/fleet_worker.rb` | Legion subscription actor for provider-owned fleet request consumption |
+| `lib/legion/extensions/llm/vertex/runners/fleet_worker.rb` | Runner entrypoint that delegates fleet request execution to `legion-llm` |
 | `lib/legion/extensions/llm/vertex/version.rb` | `VERSION` constant |
-| `lib/legion/extensions/llm/vertex/transport/exchanges/llm_registry.rb` | `llm.registry` topic exchange definition |
-| `lib/legion/extensions/llm/vertex/transport/messages/registry_event.rb` | Transport message for registry events |
 
 ## Observability
 
@@ -130,14 +131,13 @@ Provider-specific request bodies are not guessed. Partner raw-predict chat reque
 
 ```bash
 bundle install
-bundle exec rspec       # 0 failures
-bundle exec rubocop -A  # auto-fix
-bundle exec rubocop     # lint check
+bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
+bundle exec rubocop -A
 ```
 
 ## License
 
-Apache-2.0
+MIT
 
 ## References
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4 - 2026-05-06
+
+- Keep clean CI installs on published RubyGems dependency floors while preserving local path overrides for unreleased sibling integration testing.
+- Add a `stream_chat` compatibility alias so Vertex exposes the shared provider streaming surface even when running against older published `lex-llm` versions.
+- Register Vertex configuration options directly when the installed `lex-llm` does not expose `Configuration.register_provider_options`.
+- Make the provider-owned fleet responder bridge load only when the installed `legion-llm` exposes `Legion::LLM::Fleet::ProviderResponder`; fleet actors stay disabled instead of breaking gem load when that helper is unavailable.
+- Refresh README dependency, fleet responder, file-map, license, and development-command guidance.
+
 ## 0.2.3 - 2026-05-06
 
 - Remove require-time provider self-registration; `legion-llm` now owns adapter creation and registry writes from loaded provider discovery metadata.
