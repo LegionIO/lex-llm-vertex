@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm'
-require 'legion/extensions/llm/vertex/fleet_responder'
 require 'legion/extensions/llm/vertex/provider'
 require 'legion/extensions/llm/vertex/version'
 

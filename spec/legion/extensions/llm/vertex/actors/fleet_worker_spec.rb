@@ -1,18 +1,9 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'legion/extensions/llm/fleet/provider_responder'
 
 module Legion
-  module LLM
-    module Fleet
-      unless const_defined?(:ProviderResponder, false)
-        class ProviderResponder
-          def self.enabled_for?(*); end
-        end
-      end
-    end
-  end
-
   module Extensions
     module Actors
       unless const_defined?(:Subscription, false)
@@ -29,7 +20,7 @@ require 'legion/extensions/llm/vertex/actors/fleet_worker'
 RSpec.describe Legion::Extensions::Llm::Vertex::Actor::FleetWorker do # rubocop:disable RSpec/SpecFilePathFormat
   subject(:actor) { described_class.new }
 
-  let(:responder) { Legion::LLM::Fleet::ProviderResponder }
+  let(:responder) { Legion::Extensions::Llm::Fleet::ProviderResponder }
 
   it 'uses the provider-owned fleet runner' do
     expect(actor.runner_class).to eq('Legion::Extensions::Llm::Vertex::Runners::FleetWorker')

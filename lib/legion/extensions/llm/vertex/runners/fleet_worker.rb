@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'legion/extensions/llm/vertex/fleet_responder'
+require 'legion/extensions/llm/fleet/provider_responder'
 require 'legion/extensions/llm/vertex/provider'
 
 module Legion
@@ -13,7 +13,7 @@ module Legion
             module_function
 
             def handle_fleet_request(payload, delivery: nil, properties: nil)
-              Vertex::FleetResponder.call(
+              Legion::Extensions::Llm::Fleet::ProviderResponder.call(
                 payload: payload,
                 provider_family: Vertex::PROVIDER_FAMILY,
                 provider_class: Vertex::Provider,

@@ -1,19 +1,8 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'legion/extensions/llm/fleet/provider_responder'
 require 'legion/extensions/llm/vertex/runners/fleet_worker'
-
-module Legion
-  module LLM
-    module Fleet
-      unless const_defined?(:ProviderResponder, false)
-        class ProviderResponder
-          def self.call(**); end
-        end
-      end
-    end
-  end
-end
 
 FleetWorkerSpecDelivery = Class.new unless defined?(FleetWorkerSpecDelivery)
 FleetWorkerSpecProperties = Class.new unless defined?(FleetWorkerSpecProperties)
@@ -23,9 +12,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Runners::FleetWorker do
   let(:delivery) { instance_double(FleetWorkerSpecDelivery) }
   let(:properties) { instance_double(FleetWorkerSpecProperties) }
   let(:instances) { { local: { fleet: { respond_to_requests: true } } } }
-  let(:responder) { Legion::LLM::Fleet::ProviderResponder }
+  let(:responder) { Legion::Extensions::Llm::Fleet::ProviderResponder }
 
-  it 'delegates fleet execution to the shared legion-llm responder helper' do
+  it 'delegates fleet execution to the shared lex-llm responder helper' do
     allow(Legion::Extensions::Llm::Vertex).to receive(:discover_instances).and_return(instances)
     allow(responder).to receive(:call).and_return(:ok)
 

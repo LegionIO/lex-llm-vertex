@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 - 2026-05-06
+
+- Use the shared `lex-llm` fleet provider responder helper for provider-owned fleet workers.
+- Remove the runtime `legion-llm` dependency and require `lex-llm >= 0.4.3` for responder-side fleet execution.
+
 ## 0.2.4 - 2026-05-06
 
 - Keep clean CI installs on published RubyGems dependency floors while preserving local path overrides for unreleased sibling integration testing.
