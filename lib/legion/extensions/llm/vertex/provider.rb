@@ -185,11 +185,8 @@ module Legion
             tools: {},
             tool_prefs: nil,
             params: {},
-            headers: {},
-            schema: nil,
-            thinking: nil
+            **_provider_options
           )
-            _ = [headers, schema, thinking]
             model_id = model_id(model)
             log.info { "chat model=#{model_id} messages=#{messages.size}" }
             @model = model_id
@@ -200,8 +197,7 @@ module Legion
           end
 
           def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
-                     headers: {}, schema: nil, thinking: nil)
-            _ = [headers, schema, thinking]
+                     **_provider_options)
             model_id = model_id(model)
             log.info { "stream model=#{model_id} messages=#{messages.size}" }
             @model = model_id
@@ -213,10 +209,9 @@ module Legion
             parse_chat_response(response, model: model_id)
           end
 
-          def stream_chat(messages:, model:, tools: {}, temperature: nil, max_tokens: nil, params: {}, headers: {},
-                          schema: nil, thinking: nil, tool_prefs: nil, &)
-            stream(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:, params:, headers:, schema:,
-                   thinking:, &)
+          def stream_chat(messages:, model:, tools: {}, temperature: nil, max_tokens: nil, params: {}, tool_prefs: nil,
+                          **provider_options, &)
+            stream(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:, params:, **provider_options, &)
           end
 
           def count_tokens(
@@ -247,9 +242,8 @@ module Legion
             task_type: nil,
             title: nil,
             params: {},
-            headers: {}
+            **_provider_options
           )
-            _ = headers
             model_id = model_id(model)
             log.info { "embed model=#{model_id} inputs=#{Array(text).size}" }
             unless Capabilities.embeddings?(model_id)
@@ -326,8 +320,8 @@ module Legion
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :vertex,
               instance_id: instance_id,
-              transport: :http,
-              tier: :frontier,
+              transport: configured_transport(:http),
+              tier: configured_tier(:frontier),
               model: model,
               usage_type: usage_type,
               capabilities: default_capabilities(model, api:),
@@ -341,6 +335,14 @@ module Legion
                 api: api
               ).compact
             )
+          end
+
+          def configured_transport(default)
+            config.respond_to?(:transport) ? config.transport : default
+          end
+
+          def configured_tier(default)
+            config.respond_to?(:tier) ? config.tier : default
           end
 
           def publisher_parent

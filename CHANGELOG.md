@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.6 - 2026-05-06
+
+- Load provider-owned fleet actors through the LegionIO subscription base and the canonical Vertex provider root.
+- Keep fleet runners anchored on the provider root namespace so provider constants and instance discovery are always loaded.
+- Preserve configured transport and tier metadata when Vertex builds routing offerings.
+- Remove throwaway unused-argument allocation in provider request methods.
+- Gate release publishing on the shared security workflow.
+
 ## 0.2.5 - 2026-05-06
 
 - Use the shared `lex-llm` fleet provider responder helper for provider-owned fleet workers.

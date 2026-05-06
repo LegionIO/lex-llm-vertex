@@ -145,6 +145,19 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     expect(offering.metadata).to include(model_family: :gemini, alias: 'gemini-flash')
   end
 
+  it 'uses provider instance transport and tier in offerings' do
+    configured = described_class::Provider.new(
+      vertex_project: 'test-project',
+      vertex_location: 'us-central1',
+      vertex_access_token: 'token',
+      transport: :rabbitmq,
+      tier: :fleet
+    )
+    offering = configured.offering_for(model: 'gemini-flash', model_family: :gemini)
+
+    expect(offering.to_h).to include(transport: :rabbitmq, tier: :fleet)
+  end
+
   it 'preserves full Vertex resource names supplied by callers' do
     resource = resource_name('anthropic', 'claude-sonnet-4-5')
     offering = provider.offering_for(model: resource, model_family: :anthropic)
