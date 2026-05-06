@@ -4,3 +4,5 @@ require 'bundler/setup'
 require 'legion/extensions/llm'
 
 require 'legion/extensions/llm/vertex'
+
+Legion::Logging.setup(level: 'fatal', log_file: File::NULL, log_stdout: false, async: false, color: false)
