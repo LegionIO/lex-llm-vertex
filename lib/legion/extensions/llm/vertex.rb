@@ -16,17 +16,33 @@ module Legion
         PROVIDER_FAMILY = :vertex
 
         def self.default_settings
-          {
-            enabled: false,
-            default_model: nil,
-            project: nil,
-            location: 'us-central1',
-            model_whitelist: [],
-            model_blacklist: [],
-            model_cache_ttl: 3600,
-            tls: { enabled: false, verify: :peer },
-            instances: {}
-          }
+          ::Legion::Extensions::Llm.provider_settings(
+            family: PROVIDER_FAMILY,
+            instance: {
+              endpoint: nil,
+              tier: :frontier,
+              transport: :http,
+              credentials: {
+                access_token: nil,
+                credentials: nil
+              },
+              provider: {
+                project: nil,
+                location: Provider::DEFAULT_LOCATION,
+                model_aliases: {}
+              },
+              usage: { inference: true, embedding: true, image: false },
+              limits: { concurrency: 4 },
+              fleet: {
+                enabled: false,
+                respond_to_requests: false,
+                capabilities: %i[chat stream_chat embed],
+                lanes: [],
+                concurrency: 4,
+                queue_suffix: nil
+              }
+            }
+          )
         end
 
         def self.provider_class
@@ -44,7 +60,7 @@ module Legion
           cfg = CredentialSources.setting(:extensions, :llm, :vertex)
           return unless cfg.is_a?(Hash) && vertex_credentials_present?(cfg)
 
-          instances[:settings] = cfg.except(:instances, 'instances').merge(tier: :cloud)
+          instances[:settings] = normalize_instance_config(cfg).merge(tier: :cloud)
         end
 
         def self.discover_named_instances(instances)
@@ -57,7 +73,7 @@ module Legion
           named.each do |name, config|
             next unless config.is_a?(Hash) && vertex_credentials_present?(config)
 
-            instances[name.to_sym] = config.merge(tier: :cloud)
+            instances[name.to_sym] = normalize_instance_config(config).merge(tier: :cloud)
           end
         end
 
@@ -70,10 +86,33 @@ module Legion
           !(token.nil? && creds.nil?)
         end
 
-        private_class_method :discover_default_instance, :discover_named_instances, :vertex_credentials_present?
+        def self.normalize_instance_config(config)
+          normalized = config.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
+          normalized[:vertex_project] ||= normalized.delete(:project)
+          normalized[:vertex_location] ||= normalized.delete(:location)
+          normalized[:vertex_api_base] ||= normalized.delete(:base_url)
+          normalized[:vertex_api_base] ||= normalized.delete(:api_base)
+          normalized[:vertex_api_base] ||= normalized.delete(:endpoint)
+          normalized[:vertex_access_token] ||= normalized.delete(:access_token)
+          normalized[:vertex_credentials] ||= normalized.delete(:credentials)
+          normalized[:vertex_model_aliases] ||= normalized.delete(:model_aliases)
+          normalized.compact.except(:instances)
+        end
+
+        def self.register_provider_options
+          configuration = Legion::Extensions::Llm::Configuration
+          if configuration.respond_to?(:register_provider_options)
+            configuration.register_provider_options(Provider.configuration_options)
+          elsif configuration.respond_to?(:option, true)
+            Provider.configuration_options.each { |key| configuration.send(:option, key) }
+          end
+        end
+
+        private_class_method :discover_default_instance, :discover_named_instances, :vertex_credentials_present?,
+                             :normalize_instance_config, :register_provider_options
+
+        register_provider_options
       end
     end
   end
 end
-
-Legion::Extensions::Llm::Vertex.register_discovered_instances

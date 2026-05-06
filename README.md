@@ -2,7 +2,7 @@
 
 Google Cloud Vertex AI provider extension for `Legion::Extensions::Llm`.
 
-This gem adds a hosted Vertex AI provider surface for Legion LLM routing without depending on the old `legion-llm` gem. It keeps discovery offline by default, preserves full Vertex publisher model resource names for routing, and exposes project/location instance metadata for multi-region provider fleets. It requires `lex-llm >= 0.1.5` for the shared model offering, alias, readiness, and fleet lane contract.
+This gem adds a hosted Vertex AI provider surface for Legion LLM routing. It keeps discovery offline by default, preserves full Vertex publisher model resource names for routing, and exposes project/location instance metadata for multi-region provider fleets. It installs against the current published `lex-llm` gem, while the `Gemfile` can use local sibling checkouts for unreleased provider-contract testing.
 
 ## Install
 
@@ -32,6 +32,27 @@ Default settings expose `env://` references and keep live discovery disabled:
 Legion::Extensions::Llm::Vertex.default_settings
 ```
 
+## Fleet Responder
+
+Provider instances can opt in to consuming Legion LLM fleet requests. The provider-owned fleet actor only starts when at least one configured instance enables `respond_to_requests`.
+
+Fleet request execution is delegated to `Legion::Extensions::Llm::Fleet::ProviderResponder` from `lex-llm`. Request-side routing and reply orchestration remain owned by `legion-llm`; this provider only needs `lex-llm` and `legion-transport` to consume fleet jobs on a responder node.
+
+```yaml
+extensions:
+  llm:
+    vertex:
+      instances:
+        local:
+          fleet:
+            enabled: true
+            respond_to_requests: true
+            capabilities:
+              - chat
+              - stream_chat
+              - embed
+```
+
 ## Provider Surface
 
 ```ruby
@@ -40,10 +61,10 @@ provider = Legion::Extensions::Llm::Vertex::Provider.new(Legion::Extensions::Llm
 provider.discover_offerings(live: false)
 provider.offering_for(model: 'gemini-2.5-flash')
 provider.health(live: false)
-provider.chat(messages, model: model)
-provider.stream(messages, model: model) { |chunk| chunk.content }
-provider.embed('hello', model: 'gemini-embedding-001')
-provider.count_tokens(messages, model: model)
+provider.chat(messages:, model:)
+provider.stream_chat(messages:, model:) { |chunk| chunk.content }
+provider.embed(text: 'hello', model: 'gemini-embedding-001')
+provider.count_tokens(messages:, model:)
 ```
 
 `discover_offerings(live: false)` returns a conservative static catalog for routing defaults and unit tests. `discover_offerings(live: true)` calls the Vertex publisher models listing endpoint and maps returned model data into `Legion::Extensions::Llm::Routing::ModelOffering` records.
@@ -82,11 +103,9 @@ When transport is available, the `RegistryPublisher` publishes best-effort readi
 |------|---------|
 | `lib/legion/extensions/llm/vertex.rb` | Namespace module, default settings, provider registration |
 | `lib/legion/extensions/llm/vertex/provider.rb` | Vertex AI provider: chat, stream, embed, count_tokens, health, discovery |
-| `lib/legion/extensions/llm/vertex/registry_publisher.rb` | Async best-effort llm.registry event publisher |
-| `lib/legion/extensions/llm/vertex/registry_event_builder.rb` | Builds sanitized registry event envelopes |
+| `lib/legion/extensions/llm/vertex/actors/fleet_worker.rb` | Legion subscription actor for provider-owned fleet request consumption |
+| `lib/legion/extensions/llm/vertex/runners/fleet_worker.rb` | Runner entrypoint that delegates fleet request execution to `lex-llm` |
 | `lib/legion/extensions/llm/vertex/version.rb` | `VERSION` constant |
-| `lib/legion/extensions/llm/vertex/transport/exchanges/llm_registry.rb` | `llm.registry` topic exchange definition |
-| `lib/legion/extensions/llm/vertex/transport/messages/registry_event.rb` | Transport message for registry events |
 
 ## Observability
 
@@ -111,14 +130,13 @@ Provider-specific request bodies are not guessed. Partner raw-predict chat reque
 
 ```bash
 bundle install
-bundle exec rspec       # 0 failures
-bundle exec rubocop -A  # auto-fix
-bundle exec rubocop     # lint check
+bundle exec rspec --format json --out tmp/rspec_results.json --format progress --out tmp/rspec_progress.txt
+bundle exec rubocop -A
 ```
 
 ## License
 
-Apache-2.0
+MIT
 
 ## References
 

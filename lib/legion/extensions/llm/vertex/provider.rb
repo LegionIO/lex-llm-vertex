@@ -177,7 +177,16 @@ module Legion
             end
           end
 
-          def chat(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {})
+          def chat(
+            messages:,
+            model:,
+            temperature: nil,
+            max_tokens: nil,
+            tools: {},
+            tool_prefs: nil,
+            params: {},
+            **_provider_options
+          )
             model_id = model_id(model)
             log.info { "chat model=#{model_id} messages=#{messages.size}" }
             @model = model_id
@@ -187,7 +196,8 @@ module Legion
             parse_chat_response(response, model: model_id)
           end
 
-          def stream(messages, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {})
+          def stream(messages:, model:, temperature: nil, max_tokens: nil, tools: {}, tool_prefs: nil, params: {},
+                     **_provider_options)
             model_id = model_id(model)
             log.info { "stream model=#{model_id} messages=#{messages.size}" }
             @model = model_id
@@ -199,7 +209,16 @@ module Legion
             parse_chat_response(response, model: model_id)
           end
 
-          def count_tokens(messages, model:, params: {})
+          def stream_chat(messages:, model:, tools: {}, temperature: nil, max_tokens: nil, params: {}, tool_prefs: nil,
+                          **provider_options, &)
+            stream(messages:, model:, temperature:, max_tokens:, tools:, tool_prefs:, params:, **provider_options, &)
+          end
+
+          def count_tokens(
+            messages:,
+            model:,
+            params: {}
+          )
             model_id = model_id(model)
             log.info { "count_tokens model=#{model_id}" }
             unless generate_content_model?(model_id)
@@ -216,7 +235,15 @@ module Legion
             { input_tokens: response.body['totalTokens'], raw: response.body }
           end
 
-          def embed(text, model:, dimensions: nil, task_type: nil, title: nil, params: {})
+          def embed(
+            text:,
+            model:,
+            dimensions: nil,
+            task_type: nil,
+            title: nil,
+            params: {},
+            **_provider_options
+          )
             model_id = model_id(model)
             log.info { "embed model=#{model_id} inputs=#{Array(text).size}" }
             unless Capabilities.embeddings?(model_id)
@@ -236,9 +263,9 @@ module Legion
             payload[:generationConfig] = Utils.deep_merge(payload[:generationConfig] || {},
                                                           generation_config(temperature, schema, thinking))
             if block_given?
-              stream(messages, model:, temperature:, tools:, tool_prefs:, params: payload, &)
+              stream(messages:, model:, temperature:, tools:, tool_prefs:, params: payload, &)
             else
-              chat(messages, model:, temperature:, tools:, tool_prefs:, params: payload)
+              chat(messages:, model:, temperature:, tools:, tool_prefs:, params: payload)
             end
           end
 
@@ -293,8 +320,8 @@ module Legion
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :vertex,
               instance_id: instance_id,
-              transport: :http,
-              tier: :frontier,
+              transport: configured_transport(:http),
+              tier: configured_tier(:frontier),
               model: model,
               usage_type: usage_type,
               capabilities: default_capabilities(model, api:),
@@ -308,6 +335,14 @@ module Legion
                 api: api
               ).compact
             )
+          end
+
+          def configured_transport(default)
+            config.respond_to?(:transport) ? config.transport : default
+          end
+
+          def configured_tier(default)
+            config.respond_to?(:tier) ? config.tier : default
           end
 
           def publisher_parent

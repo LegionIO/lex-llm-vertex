@@ -77,15 +77,13 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
   it 'exposes default_settings with the new base contract shape' do
     settings = described_class.default_settings
+    instance = settings.dig(:instances, :default)
 
-    expect(settings[:enabled]).to be false
-    expect(settings[:default_model]).to be_nil
-    expect(settings[:location]).to eq('us-central1')
-    expect(settings[:model_whitelist]).to eq([])
-    expect(settings[:model_blacklist]).to eq([])
-    expect(settings[:model_cache_ttl]).to eq(3600)
-    expect(settings[:tls]).to include(enabled: false)
-    expect(settings[:instances]).to eq({})
+    expect(settings[:enabled]).to be true
+    expect(settings[:provider_family]).to eq(:vertex)
+    expect(instance.dig(:provider, :location)).to eq('us-central1')
+    expect(instance[:transport]).to eq(:http)
+    expect(instance.dig(:fleet, :respond_to_requests)).to be false
   end
 
   it 'exposes project and location aware endpoint helpers' do
@@ -147,6 +145,19 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     expect(offering.metadata).to include(model_family: :gemini, alias: 'gemini-flash')
   end
 
+  it 'uses provider instance transport and tier in offerings' do
+    configured = described_class::Provider.new(
+      vertex_project: 'test-project',
+      vertex_location: 'us-central1',
+      vertex_access_token: 'token',
+      transport: :rabbitmq,
+      tier: :fleet
+    )
+    offering = configured.offering_for(model: 'gemini-flash', model_family: :gemini)
+
+    expect(offering.to_h).to include(transport: :rabbitmq, tier: :fleet)
+  end
+
   it 'preserves full Vertex resource names supplied by callers' do
     resource = resource_name('anthropic', 'claude-sonnet-4-5')
     offering = provider.offering_for(model: resource, model_family: :anthropic)
@@ -185,7 +196,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   end
 
   it 'renders generateContent requests and parses assistant responses' do
-    result = provider.chat([message], model: model, temperature: 0.2)
+    result = provider.chat(messages: [message], model: model, temperature: 0.2)
 
     expect(connection.posts.first).to eq(
       [
@@ -200,7 +211,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   end
 
   it 'renders rawPredict-style partner requests without inventing provider-specific endpoints' do
-    result = provider.chat([message], model: 'mistral-medium', max_tokens: 64)
+    result = provider.chat(messages: [message], model: 'mistral-medium', max_tokens: 64)
 
     expect(connection.posts.first).to eq(
       [
@@ -212,7 +223,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   end
 
   it 'counts tokens through the Vertex countTokens publisher model shape' do
-    result = provider.count_tokens([message], model: model)
+    result = provider.count_tokens(messages: [message], model: model)
 
     expect(connection.posts.first).to eq(
       [
@@ -224,14 +235,15 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   end
 
   it 'returns token-counting metadata for non-generateContent partner models' do
-    result = provider.count_tokens([message], model: 'mistral-medium')
+    result = provider.count_tokens(messages: [message], model: 'mistral-medium')
 
     expect(result).to include(supported: false, provider: :vertex, reason: /countTokens/)
     expect(connection.posts).to be_empty
   end
 
   it 'embeds through documented Vertex text embedding predict shape' do
-    embedding = provider.embed('hello', model: 'gemini-embedding', dimensions: 256, task_type: 'RETRIEVAL_QUERY')
+    embedding = provider.embed(text: 'hello', model: 'gemini-embedding', dimensions: 256,
+                               task_type: 'RETRIEVAL_QUERY')
 
     expect(connection.posts.first).to eq(
       [
@@ -247,7 +259,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
   it 'does not invent an embedding body for non-embedding models' do
     expect do
-      provider.embed('hello', model: 'gemini-2.5-flash')
+      provider.embed(text: 'hello', model: 'gemini-2.5-flash')
     end.to raise_error(NotImplementedError, /not standardized/)
   end
 
@@ -267,7 +279,10 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
       instances = described_class.discover_instances
 
-      expect(instances[:settings]).to include(project: 'my-project', access_token: 'tok-123', tier: :cloud)
+      expect(instances[:settings]).to include(vertex_project: 'my-project',
+                                              vertex_access_token: 'tok-123',
+                                              vertex_location: 'us-east1',
+                                              tier: :cloud)
     end
 
     it 'discovers a :settings instance when project and credentials are present' do
@@ -277,7 +292,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
       instances = described_class.discover_instances
 
-      expect(instances[:settings]).to include(project: 'my-project', credentials: '/path/to/sa.json', tier: :cloud)
+      expect(instances[:settings]).to include(vertex_project: 'my-project',
+                                              vertex_credentials: '/path/to/sa.json',
+                                              tier: :cloud)
     end
 
     it 'skips the default instance when project is missing' do
@@ -303,7 +320,23 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
       instances = described_class.discover_instances
 
-      expect(instances[:prod]).to include(project: 'prod-proj', access_token: 'tok-prod', tier: :cloud)
+      expect(instances[:prod]).to include(vertex_project: 'prod-proj',
+                                          vertex_access_token: 'tok-prod',
+                                          tier: :cloud)
+    end
+
+    it 'normalizes endpoint aliases and model aliases' do
+      cfg = { project: 'my-project', access_token: 'tok-123', base_url: 'https://vertex.example/v1',
+              model_aliases: { flash: 'gemini-2.5-flash' } }
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex).and_return(cfg)
+
+      expect(described_class.discover_instances[:settings]).to include(
+        vertex_project: 'my-project',
+        vertex_access_token: 'tok-123',
+        vertex_api_base: 'https://vertex.example/v1',
+        vertex_model_aliases: { flash: 'gemini-2.5-flash' }
+      )
     end
 
     it 'skips named instances without valid credentials' do
