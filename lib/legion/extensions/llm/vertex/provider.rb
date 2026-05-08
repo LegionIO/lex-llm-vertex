@@ -112,7 +112,7 @@ module Legion
             "#{publisher_model_path(model)}:#{suffix}"
           end
 
-          def list_models
+          def list_models(**)
             log.info { 'listing available Vertex models from static catalog' }
             STATIC_MODELS.map { |entry| model_info_from_static(entry) }.tap do |models|
               log.info { "discovered #{models.size} Vertex model(s); publishing to registry" }
