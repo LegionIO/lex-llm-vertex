@@ -560,6 +560,7 @@ module Legion
             Legion::Extensions::Llm::Chunk.new(
               role: :assistant,
               content: text_content(parts),
+              tool_calls: parse_tool_calls(parts),
               input_tokens: usage['promptTokenCount'],
               output_tokens: output_tokens(usage),
               model_id: body['modelVersion'] || model,
