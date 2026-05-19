@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.8 - 2026-05-18
+
+- Fix streaming tool calls: `build_chunk` now passes `tool_calls: parse_tool_calls(parts)` to the Chunk constructor. Previously tool calls were omitted from streaming responses entirely.
+
+
 ## 0.2.7 - 2026-05-08
 
 - Accept keyword arguments in `list_models` to match the base provider contract called by `discover_offerings`.
