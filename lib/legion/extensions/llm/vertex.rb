@@ -20,7 +20,10 @@ module Legion
             family: PROVIDER_FAMILY,
             instance: {
               endpoint: nil,
-              tier: :frontier,
+              project: nil,
+              location: 'us-central1',
+              publisher: 'google',
+              tier: :cloud,
               transport: :http,
               credentials: {
                 access_token: nil,
@@ -28,7 +31,7 @@ module Legion
               },
               provider: {
                 project: nil,
-                location: Provider::DEFAULT_LOCATION,
+                location: 'us-central1',
                 model_aliases: {}
               },
               usage: { inference: true, embedding: true, image: false },
