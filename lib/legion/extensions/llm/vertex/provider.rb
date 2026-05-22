@@ -81,6 +81,10 @@ module Legion
             end
           end
 
+          def settings
+            Vertex.default_settings
+          end
+
           def api_base
             config.vertex_api_base || "https://#{location}-aiplatform.googleapis.com/v1"
           end
