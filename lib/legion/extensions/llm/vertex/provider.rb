@@ -11,10 +11,6 @@ module Legion
       module Vertex
         # Google Cloud Vertex AI provider implementation for the Legion::Extensions::Llm contract.
         class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
-          DEFAULT_LOCATION = 'us-central1'
-          DEFAULT_PROJECT = 'env://GOOGLE_CLOUD_PROJECT'
-          DEFAULT_PUBLISHER = 'google'
-
           STATIC_MODELS = [
             { model: 'gemini-2.5-flash', alias: 'gemini-flash', publisher: 'google', model_family: :gemini },
             { model: 'gemini-2.5-pro', alias: 'gemini-pro', publisher: 'google', model_family: :gemini },
@@ -39,6 +35,8 @@ module Legion
             attr_writer :registry_publisher
 
             def slug = 'vertex'
+            def default_transport = :http
+            def default_tier = :cloud
 
             def configuration_options
               %i[
@@ -83,16 +81,22 @@ module Legion
             end
           end
 
+          def settings
+            Vertex.default_settings
+          end
+
           def api_base
             config.vertex_api_base || "https://#{location}-aiplatform.googleapis.com/v1"
           end
 
           def headers
-            { 'Authorization' => bearer_token, 'Content-Type' => 'application/json; charset=utf-8' }.compact
+            identity_headers.merge({ 'Authorization' => bearer_token,
+                                     'Content-Type' => 'application/json; charset=utf-8' }.compact)
           end
 
-          def project = config.vertex_project || ENV.fetch('GOOGLE_CLOUD_PROJECT', DEFAULT_PROJECT)
-          def location = config.vertex_location || DEFAULT_LOCATION
+          def project = config.vertex_project || settings[:project] || ENV.fetch('GOOGLE_CLOUD_PROJECT', nil)
+          def location = config.vertex_location || settings[:location] || 'us-central1'
+          def default_publisher = settings[:publisher] || 'google'
           def models_url = publisher_parent
           def completion_url = generate_content_url(model: @model || STATIC_MODELS.first.fetch(:model))
           def stream_url = stream_generate_content_url(model: @model || STATIC_MODELS.first.fetch(:model))
@@ -126,7 +130,13 @@ module Legion
 
             response = connection.get(models_url)
             models = response.body['publisherModels'] || response.body['models'] || []
-            offerings = models.map { |model| offering_from_live_model(model) }
+            offerings = models.filter_map do |model|
+              offering = offering_from_live_model(model)
+              model_id = offering.respond_to?(:model) ? offering.model : (offering[:model] || offering[:id])
+              next unless model_allowed?(model_id.to_s)
+
+              offering
+            end
             log.info { "discovered #{offerings.size} live offering(s) from Vertex" }
             model_infos = offerings.map { |o| model_info_from_offering(o) }
             self.class.registry_publisher.publish_models_async(model_infos, readiness: readiness(live: false))
@@ -310,7 +320,7 @@ module Legion
 
           def offering_from_live_model(model)
             name = model['name'] || model['publisherModelName'] || model['model'] || model['id']
-            publisher = publisher_from_resource(name) || model['publisher'] || DEFAULT_PUBLISHER
+            publisher = publisher_from_resource(name) || model['publisher'] || default_publisher
             id = name.to_s.split('/').last
             offering_for(model: id, publisher:, metadata: model)
           end
@@ -320,8 +330,8 @@ module Legion
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :vertex,
               instance_id: instance_id,
-              transport: configured_transport(:http),
-              tier: configured_tier(:frontier),
+              transport: offering_transport,
+              tier: offering_tier,
               model: model,
               usage_type: usage_type,
               capabilities: default_capabilities(model, api:),
@@ -337,16 +347,8 @@ module Legion
             )
           end
 
-          def configured_transport(default)
-            config.respond_to?(:transport) ? config.transport : default
-          end
-
-          def configured_tier(default)
-            config.respond_to?(:tier) ? config.tier : default
-          end
-
           def publisher_parent
-            "projects/#{project}/locations/#{location}/publishers/#{DEFAULT_PUBLISHER}/models"
+            "projects/#{project}/locations/#{location}/publishers/#{default_publisher}/models"
           end
 
           def publisher_model_path(model)
@@ -651,7 +653,7 @@ module Legion
             id = model_id(model)
             return publisher_from_resource(id) if id.start_with?('projects/')
 
-            PUBLISHERS.fetch(id, DEFAULT_PUBLISHER)
+            PUBLISHERS.fetch(id, default_publisher)
           end
 
           def publisher_from_resource(resource)
@@ -662,7 +664,7 @@ module Legion
           def api_for(model)
             id = model_id(model)
             return API_MODES[id] if API_MODES.key?(id)
-            return :raw_predict if publisher_for(id) != DEFAULT_PUBLISHER && !Capabilities.embeddings?(id)
+            return :raw_predict if publisher_for(id) != default_publisher && !Capabilities.embeddings?(id)
 
             :generate_content
           end

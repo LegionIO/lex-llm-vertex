@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.9 - 2026-05-21
+
+- Add `default_transport`/`default_tier` class declarations, remove `configured_transport`/`configured_tier`
+- Remove `DEFAULT_LOCATION`/`DEFAULT_PROJECT`/`DEFAULT_PUBLISHER` constants — now read from settings
+- Add `model_allowed?` filtering in `discover_offerings`
+- Default tier corrected from :frontier to :cloud
+- Identity headers included via base provider
+
+
 ## 0.2.8 - 2026-05-18
 
 - Fix streaming tool calls: `build_chunk` now passes `tool_calls: parse_tool_calls(parts)` to the Chunk constructor. Previously tool calls were omitted from streaming responses entirely.
