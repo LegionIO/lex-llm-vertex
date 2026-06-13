@@ -499,9 +499,11 @@ module Legion
 
             [{
               functionDeclarations: tools.values.map do |tool|
-                declaration = { name: tool.name, description: tool.description }
-                declaration[:parameters] = tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
-                declaration
+                {
+                  name: Legion::Extensions::Llm::Canonical::ToolSchema.tool_name(tool),
+                  description: Legion::Extensions::Llm::Canonical::ToolSchema.tool_description(tool),
+                  parameters: Legion::Extensions::Llm::Canonical::ToolSchema.extract(tool)
+                }
               end
             }]
           end
