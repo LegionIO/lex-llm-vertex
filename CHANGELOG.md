@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12 - 2026-06-15
+
+- **CapabilityPolicy integration** — Model-family heuristics tagged as `:provider_catalog`; Vertex features as `:model_metadata`. Settings overrides at provider/instance/model level supported.
+
 ## 0.2.11 - 2026-06-13
 
 - **Gemfile cleanup** — Remove local path overrides; dependencies resolve from gemspec via rubygems.
