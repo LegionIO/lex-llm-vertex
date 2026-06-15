@@ -3,6 +3,7 @@
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/vertex/provider'
 require 'legion/extensions/llm/vertex/version'
+require_relative 'vertex/actors/discovery_refresh'
 
 module Legion
   module Extensions
@@ -39,10 +40,7 @@ module Legion
               fleet: {
                 enabled: false,
                 respond_to_requests: false,
-                capabilities: %i[chat stream_chat embed tools],
-                lanes: [],
-                concurrency: 4,
-                queue_suffix: nil
+                capabilities: %i[chat stream_chat embed tools]
               }
             }
           )
@@ -103,12 +101,7 @@ module Legion
         end
 
         def self.register_provider_options
-          configuration = Legion::Extensions::Llm::Configuration
-          if configuration.respond_to?(:register_provider_options)
-            configuration.register_provider_options(Provider.configuration_options)
-          elsif configuration.respond_to?(:option, true)
-            Provider.configuration_options.each { |key| configuration.send(:option, key) }
-          end
+          Legion::Extensions::Llm::Configuration.register_provider_options(Provider.configuration_options)
         end
 
         private_class_method :discover_default_instance, :discover_named_instances, :vertex_credentials_present?,
