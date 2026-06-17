@@ -327,6 +327,8 @@ module Legion
 
           def build_offering(model:, model_family:, usage_type:, publisher:, api:, instance_id: :default,
                              alias_name: nil, metadata: {})
+            policy = resolve_capability_policy(model, api:, metadata:, instance_id:)
+
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :vertex,
               instance_id: instance_id,
@@ -334,7 +336,8 @@ module Legion
               tier: offering_tier,
               model: model,
               usage_type: usage_type,
-              capabilities: default_capabilities(model, api:),
+              capabilities: base_capabilities(model, api:) + policy[:capabilities],
+              capability_sources: policy[:sources],
               limits: metadata.delete(:limits) || {},
               metadata: metadata.merge(
                 model_family: model_family,
@@ -478,7 +481,9 @@ module Legion
           end
 
           def tool_call_parts(message)
-            message.tool_calls.values.map do |tool_call|
+            # Array is canonical (name-keyed hashes dropped parallel same-name calls)
+            calls = message.tool_calls.is_a?(Hash) ? message.tool_calls.values : Array(message.tool_calls)
+            calls.map do |tool_call|
               { functionCall: { name: tool_call.name, args: tool_call.arguments } }
             end
           end
@@ -497,9 +502,11 @@ module Legion
 
             [{
               functionDeclarations: tools.values.map do |tool|
-                declaration = { name: tool.name, description: tool.description }
-                declaration[:parameters] = tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
-                declaration
+                {
+                  name: Legion::Extensions::Llm::Canonical::ToolSchema.tool_name(tool),
+                  description: Legion::Extensions::Llm::Canonical::ToolSchema.tool_description(tool),
+                  parameters: Legion::Extensions::Llm::Canonical::ToolSchema.extract(tool)
+                }
               end
             }]
           end
@@ -623,13 +630,107 @@ module Legion
           end
 
           def default_capabilities(model, api:)
+            base_capabilities(model, api:) + policy_optional_capabilities(model, api:)
+          end
+
+          def base_capabilities(model, api:)
             return %i[embedding] if Capabilities.embeddings?(model)
 
             capabilities = %i[chat]
             capabilities << :streaming if %i[generate_content raw_predict].include?(api)
-            capabilities << :vision if Capabilities.vision?(model)
-            capabilities << :functions if generate_content_model?(model)
             capabilities
+          end
+
+          def policy_optional_capabilities(model, api:)
+            return [] if Capabilities.embeddings?(model)
+
+            caps = []
+            caps << :vision if Capabilities.vision?(model)
+            caps << :tools if generate_content_model?(model) && api == :generate_content
+            caps
+          end
+
+          def resolve_capability_policy(model, api:, metadata:, instance_id:)
+            provider_catalog = capability_catalog_for(model, api:)
+            real_caps = capability_real_for(metadata)
+            provider_cfg = vertex_provider_config
+            instance_cfg = vertex_instance_config(instance_id)
+            model_cfg = vertex_model_config(model)
+
+            Legion::Extensions::Llm::CapabilityPolicy.resolve(
+              real: real_caps,
+              provider_catalog: provider_catalog,
+              probe: {},
+              provider_envelope: {},
+              provider_config: provider_cfg,
+              instance_config: instance_cfg,
+              model_config: model_cfg
+            )
+          end
+
+          def capability_catalog_for(model, api:)
+            return {} if Capabilities.embeddings?(model)
+
+            catalog = {}
+            catalog[:vision] = Capabilities.vision?(model)
+            catalog[:tools] = api == :generate_content
+            catalog[:streaming] = %i[generate_content raw_predict].include?(api)
+            catalog
+          end
+
+          def capability_real_for(metadata)
+            return {} unless metadata.is_a?(Hash)
+
+            features = metadata[:supportedFeatures] || metadata['supportedFeatures']
+            return {} unless features.is_a?(Hash)
+
+            real = {}
+            real[:tools] = features['functionCalling'] if features.key?('functionCalling')
+            real[:vision] = features['multimodalInput'] if features.key?('multimodalInput')
+            real[:thinking] = features['thinking'] if features.key?('thinking')
+            real
+          end
+
+          def vertex_provider_config
+            cfg = CredentialSources.setting(:extensions, :llm, :vertex)
+            return {} unless cfg.is_a?(Hash)
+
+            cfg.except(:instances, 'instances')
+          rescue StandardError => e
+            handle_exception(e, level: :debug, handled: true, operation: 'vertex.provider.capability_policy_config')
+            {}
+          end
+
+          def vertex_instance_config(instance_id)
+            cfg = CredentialSources.setting(:extensions, :llm, :vertex)
+            return {} unless cfg.is_a?(Hash)
+
+            instances = cfg[:instances] || cfg['instances']
+            return {} unless instances.is_a?(Hash)
+
+            (instances[instance_id] || instances[instance_id.to_s] || {}).to_h
+          rescue StandardError => e
+            handle_exception(e, level: :debug, handled: true, operation: 'vertex.provider.instance_config')
+            {}
+          end
+
+          def vertex_model_config(model)
+            cfg = CredentialSources.setting(:extensions, :llm, :vertex)
+            return {} unless cfg.is_a?(Hash)
+
+            models = cfg[:models] || cfg['models']
+            return {} unless models.is_a?(Hash)
+
+            id = short_model_id(model)
+            (models[id.to_sym] || models[id.to_s] || {}).to_h
+          rescue StandardError => e
+            handle_exception(e, level: :debug, handled: true, operation: 'vertex.provider.model_config')
+            {}
+          end
+
+          def short_model_id(model)
+            id = model_id(model)
+            id.include?('/') ? id.split('/').last : id
           end
 
           def bearer_token
