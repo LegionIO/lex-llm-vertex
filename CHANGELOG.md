@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.13 - 2026-06-16
+
+- Dependency updates and code quality improvements.
+
 ## 0.2.12 - 2026-06-15
 
 - **CapabilityPolicy integration** — Model-family heuristics tagged as `:provider_catalog`; Vertex features as `:model_metadata`. Settings overrides at provider/instance/model level supported.
