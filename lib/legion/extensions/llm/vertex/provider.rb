@@ -697,7 +697,7 @@ module Legion
 
             cfg.except(:instances, 'instances')
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'vertex.provider.capability_policy_config')
+            handle_exception(e, level: :warn, handled: true, operation: 'vertex.provider.capability_policy_config')
             {}
           end
 
@@ -710,7 +710,7 @@ module Legion
 
             (instances[instance_id] || instances[instance_id.to_s] || {}).to_h
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'vertex.provider.instance_config')
+            handle_exception(e, level: :warn, handled: true, operation: 'vertex.provider.instance_config')
             {}
           end
 
@@ -724,7 +724,7 @@ module Legion
             id = short_model_id(model)
             (models[id.to_sym] || models[id.to_s] || {}).to_h
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'vertex.provider.model_config')
+            handle_exception(e, level: :warn, handled: true, operation: 'vertex.provider.model_config')
             {}
           end
 
