@@ -116,7 +116,7 @@ module Legion
             "#{publisher_model_path(model)}:#{suffix}"
           end
 
-          def list_models(**)
+          def list_models(**_filters)
             log.info { 'listing available Vertex models from static catalog' }
             STATIC_MODELS.map { |entry| model_info_from_static(entry) }.tap do |models|
               log.info { "discovered #{models.size} Vertex model(s); publishing to registry" }
@@ -125,22 +125,13 @@ module Legion
           end
 
           def discover_offerings(live: false, **filters)
-            log.info { "discovering offerings live=#{live} project=#{project} location=#{location}" }
-            return static_offerings(**filters) unless live
-
-            response = connection.get(models_url)
-            models = response.body['publisherModels'] || response.body['models'] || []
-            offerings = models.filter_map do |model|
-              offering = offering_from_live_model(model)
-              model_id = offering.respond_to?(:model) ? offering.model : (offering[:model] || offering[:id])
-              next unless model_allowed?(model_id.to_s)
-
-              offering
+            unless live
+              return static_offerings(**filters).select do |offering|
+                model_allowed?(short_model_id(offering.model))
+              end
             end
-            log.info { "discovered #{offerings.size} live offering(s) from Vertex" }
-            model_infos = offerings.map { |o| model_info_from_offering(o) }
-            self.class.registry_publisher.publish_models_async(model_infos, readiness: readiness(live: false))
-            offerings
+
+            super
           end
 
           def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
@@ -325,8 +316,48 @@ module Legion
             offering_for(model: id, publisher:, metadata: model)
           end
 
+          def offering_from_model(model_info, health: {})
+            metadata = model_info.respond_to?(:metadata) ? model_info.metadata.to_h : {}
+            raw_model = model_info.respond_to?(:id) ? model_info.id : model_info
+            publisher = metadata[:publisher] || metadata['publisher'] || publisher_for(raw_model)
+            api = metadata[:api] || metadata['api'] || api_for(raw_model)
+            alias_name = model_info.respond_to?(:name) ? model_info.name : nil
+            alias_name = nil if alias_name.to_s.empty? || alias_name.to_s == raw_model.to_s
+
+            build_offering(
+              model: resource_name(raw_model, publisher: publisher),
+              alias_name: alias_name,
+              model_family: if model_info.respond_to?(:family) && model_info.family
+                              model_info.family.to_sym
+                            else
+                              model_family_for(
+                                raw_model, publisher
+                              )
+                            end,
+              instance_id: if model_info.respond_to?(:instance)
+                             model_info.instance || provider_instance_id
+                           else
+                             provider_instance_id
+                           end,
+              publisher: publisher,
+              usage_type: if model_info.respond_to?(:embedding?) && model_info.embedding?
+                            :embedding
+                          else
+                            usage_type_for(raw_model)
+                          end,
+              api: api,
+              health: health,
+              metadata: metadata.merge(
+                limits: {
+                  context_window: model_info.respond_to?(:context_length) ? model_info.context_length : nil,
+                  max_output_tokens: model_info.respond_to?(:max_output_tokens) ? model_info.max_output_tokens : nil
+                }.compact
+              )
+            )
+          end
+
           def build_offering(model:, model_family:, usage_type:, publisher:, api:, instance_id: :default,
-                             alias_name: nil, metadata: {})
+                             alias_name: nil, health: {}, metadata: {})
             policy = resolve_capability_policy(model, api:, metadata:, instance_id:)
 
             Legion::Extensions::Llm::Routing::ModelOffering.new(
@@ -339,6 +370,7 @@ module Legion
               capabilities: base_capabilities(model, api:) + policy[:capabilities],
               capability_sources: policy[:sources],
               limits: metadata.delete(:limits) || {},
+              health: health,
               metadata: metadata.merge(
                 model_family: model_family,
                 alias: alias_name,

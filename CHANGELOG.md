@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.15] - 2026-06-20
+
+### Changed
+- Align Vertex offerings to the current `lex-llm` contract: shared `discover_offerings` now rebuilds
+  resource-name offerings from discovered models, preserves provider health on offerings, and keeps the
+  shared capability-override path intact.
+- Fix the provider tail introduced during the contract refactor so the provider file closes cleanly again.
+
 ## [0.2.14] - 2026-06-19
 
 ### Changed
