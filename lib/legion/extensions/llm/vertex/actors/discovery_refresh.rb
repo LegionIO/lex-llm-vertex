@@ -70,14 +70,27 @@ module Legion
 
             def lanes_for_instance(entry, fleet_enabled: false)
               adapter     = entry[:adapter]
-              instance_id = entry[:instance]
+              instance_id = entry[:instance] || entry[:instance_id] || entry[:id]
               lanes       = []
-              Array(adapter.discover_offerings(live: false)).each do |offering|
+              Array(adapter.discover_offerings(live: false)).each do |raw_offering|
+                offering = offering_to_hash(raw_offering)
+                next unless offering
+
                 lane = build_lane(offering, instance_id)
                 lanes << lane
                 lanes << fleet_lane(lane, instance_id, offering) if fleet_enabled && lane[:type] == :inference
               end
               lanes
+            end
+
+            def offering_to_hash(offering)
+              return nil if offering.nil?
+              return offering if offering.is_a?(Hash)
+
+              hash = offering.to_h
+              hash[:type] ||= hash[:usage_type]
+              hash[:enabled] = offering.respond_to?(:enabled?) ? offering.enabled? : true
+              hash
             end
 
             def build_lane(offering, instance_id)
