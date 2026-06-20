@@ -126,18 +126,7 @@ module Legion
             end
 
             def manual
-              log.debug('[vertex][discovery_refresh] refreshing model list')
               tick if respond_to?(:tick)
-              return unless defined?(Legion::LLM::Discovery)
-
-              Legion::LLM::Discovery.refresh_discovered_models!(provider: :vertex)
-
-              if defined?(Legion::LLM::Router) && Legion::LLM::Router.respond_to?(:populate_auto_rules)
-                Legion::LLM::Router.populate_auto_rules(Legion::LLM::Discovery.discovered_instances)
-              end
-              if defined?(Legion::LLM::Inventory) && Legion::LLM::Inventory.respond_to?(:invalidate_offerings_cache!)
-                Legion::LLM::Inventory.invalidate_offerings_cache!
-              end
             rescue StandardError => e
               handle_exception(e, level: :warn, handled: true, operation: 'vertex.actor.discovery_refresh')
             end
