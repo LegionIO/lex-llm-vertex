@@ -181,8 +181,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
     expect(connection.gets).to eq(['projects/test-project/locations/us-central1/publishers/google/models'])
     expect(offerings.first.model).to eq(resource_name('google', 'gemini-2.5-flash'))
+    expect(offerings.first.health).to include(provider: :vertex, ready: true)
     expect(registry_publisher).to have_received(:publish_models_async)
-      .with(array_including(an_object_having_attributes(id: resource_name('google', 'gemini-2.5-flash'))),
+      .with(array_including(an_object_having_attributes(id: 'gemini-2.5-flash')),
             readiness: hash_including(provider: :vertex, live: false))
   end
 
