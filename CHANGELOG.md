@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.16] - 2026-08-04
+
+### Changed
+- Advance patch-release metadata to keep the Vertex provider aligned with the coordinated Legion LLM provider release set. No runtime behavior changes are included.
+
 ## [0.2.15] - 2026-06-20
 
 ### Changed
