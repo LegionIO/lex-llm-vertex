@@ -98,8 +98,19 @@ module Legion
           def location = config.vertex_location || settings[:location] || 'us-central1'
           def default_publisher = settings[:publisher] || 'google'
           def models_url = publisher_parent
-          def completion_url = generate_content_url(model: @model || STATIC_MODELS.first.fetch(:model))
-          def stream_url = stream_generate_content_url(model: @model || STATIC_MODELS.first.fetch(:model))
+
+          def completion_url(model: @model)
+            raise ArgumentError, 'model is required for completion_url' unless model
+
+            generate_content_url(model: model)
+          end
+
+          def stream_url(model: @model)
+            raise ArgumentError, 'model is required for stream_url' unless model
+
+            stream_generate_content_url(model: model)
+          end
+
           def count_tokens_url(model:) = "#{publisher_model_path(model)}:countTokens"
           def embedding_url(model:) = "#{publisher_model_path(model)}:predict"
 

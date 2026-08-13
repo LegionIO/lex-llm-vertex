@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0] - 2026-08-13
+
+### Changed
+- **SSOT v3 provider migration** — Complete rewrite of the discovery actor to the
+  Inventory::Publisher pattern. Claims instances by `{project}:{location}/{credential_fingerprint}`,
+  discovers models from the STATIC_MODELS catalog, probes health via the non-inference
+  models-list endpoint, and publishes OfferingDraft snapshots with full operation/capability evidence.
+- Remove `@model || STATIC_MODELS.first` default-model fallbacks from `completion_url`/`stream_url`.
+- Remove `Legion::LLM::Call::Registry` and `ScopedRefresher` dependencies from the discovery actor.
+- Add `VertexCallable` with `disconnect` and `normalize_dispatch_error(error:)` contracts.
+- Add SSOT v3 conformance spec with `it_behaves_like 'an SSOT v3 provider adapter'`.
+- Bump `lex-llm` dependency floor to `>= 0.7.0`.
+- `publication_source: :provider_static_catalog` for all offerings derived from STATIC_MODELS.
+- Two distinct projects/locations produce independent instances with separate lanes.
+- Initial readiness failure leaves instance in `:initializing` state (not `:unavailable`).
+- Error normalization: connection failure escalates to `instance_unavailable` (Vertex is cloud);
+  503 with explicit SERVICE_UNAVAILABLE body escalates to `instance_unavailable`; 503/529 with
+  overload body stays `overloaded`; 429 maps to `rate_limited`.
+
 ## [0.2.16] - 2026-08-04
 
 ### Changed

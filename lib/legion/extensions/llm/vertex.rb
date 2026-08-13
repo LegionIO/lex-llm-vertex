@@ -3,6 +3,7 @@
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/vertex/provider'
 require 'legion/extensions/llm/vertex/version'
+require_relative 'vertex/callable'
 require_relative 'vertex/actors/discovery_refresh'
 
 module Legion
