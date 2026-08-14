@@ -17,7 +17,7 @@ end
 
 require 'legion/extensions/llm/vertex/actors/fleet_worker'
 
-RSpec.describe Legion::Extensions::Llm::Vertex::Actor::FleetWorker do # rubocop:disable RSpec/SpecFilePathFormat
+RSpec.describe Legion::Extensions::Llm::Vertex::Actor::FleetWorker do
   subject(:actor) { described_class.new }
 
   let(:responder) { Legion::Extensions::Llm::Fleet::ProviderResponder }

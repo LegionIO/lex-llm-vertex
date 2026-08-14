@@ -160,7 +160,7 @@ module Legion
               end
               if instances.empty?
                 top_level = build_top_level_instance
-                instances[:default_instance] = top_level if top_level
+                instances[:settings] = top_level if top_level
               end
               instances
             end
@@ -280,6 +280,7 @@ module Legion
                 metadata: { status: response.status, base_url: base_url }
               )
             rescue StandardError => e
+              handle_exception(e, level: :warn, operation: 'vertex.actor.check_health')
               Legion::Extensions::Llm::Inventory::ReadinessResult.new(
                 ready: false, reason: "Vertex models-list error: #{e.message}",
                 metadata: { error_class: e.class.name }

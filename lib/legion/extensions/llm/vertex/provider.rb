@@ -10,7 +10,7 @@ module Legion
     module Llm
       module Vertex
         # Google Cloud Vertex AI provider implementation for the Legion::Extensions::Llm contract.
-        class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
+        class Provider < Legion::Extensions::Llm::Provider
           STATIC_MODELS = [
             { model: 'gemini-2.5-flash', alias: 'gemini-flash', publisher: 'google', model_family: :gemini },
             { model: 'gemini-2.5-pro', alias: 'gemini-pro', publisher: 'google', model_family: :gemini },
@@ -32,8 +32,6 @@ module Legion
           MODEL_FAMILIES = STATIC_MODELS.to_h { |entry| [entry.fetch(:model), entry.fetch(:model_family)] }.freeze
 
           class << self
-            attr_writer :registry_publisher
-
             def slug = 'vertex'
             def default_transport = :http
             def default_tier = :cloud
@@ -53,12 +51,8 @@ module Legion
             def configuration_requirements = []
             def capabilities = Capabilities
 
-            def registry_publisher
-              @registry_publisher ||= Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :vertex)
-            end
-
             def resolve_model_id(model_id, config: nil)
-              configured_aliases = config.respond_to?(:vertex_model_aliases) ? config.vertex_model_aliases : nil
+              configured_aliases = config&.vertex_model_aliases
               aliases = ALIASES.merge((configured_aliases || {}).transform_keys(&:to_s))
               aliases.fetch(model_id.to_s, model_id.to_s)
             end
@@ -81,13 +75,6 @@ module Legion
             end
           end
 
-          def settings
-            instances = Vertex.default_settings[:instances]
-            return {} unless instances.is_a?(Hash)
-
-            instances[:default] || {}
-          end
-
           def api_base
             config.vertex_api_base || "https://#{location}-aiplatform.googleapis.com/v1"
           end
@@ -97,9 +84,9 @@ module Legion
                                      'Content-Type' => 'application/json; charset=utf-8' }.compact)
           end
 
-          def project = config.vertex_project || settings[:project] || ENV.fetch('GOOGLE_CLOUD_PROJECT', nil)
-          def location = config.vertex_location || settings[:location]
-          def default_publisher = settings[:publisher]
+          def project = config.vertex_project || ENV.fetch('GOOGLE_CLOUD_PROJECT', nil)
+          def location = config.vertex_location
+          def default_publisher = 'google'
           def models_url = publisher_parent
 
           def completion_url(model: @model)
@@ -133,8 +120,7 @@ module Legion
           def list_models(**_filters)
             log.info { 'listing available Vertex models from static catalog' }
             STATIC_MODELS.map { |entry| model_info_from_static(entry) }.tap do |models|
-              log.info { "discovered #{models.size} Vertex model(s); publishing to registry" }
-              self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
+              log.info { "listed #{models.size} Vertex model(s)" }
             end
           end
 
@@ -187,9 +173,7 @@ module Legion
 
           def readiness(live: false)
             health(live:).merge(local: false, remote: true, api_base: api_base,
-                                endpoints: endpoint_manifest).tap do |metadata|
-              self.class.registry_publisher.publish_readiness_async(metadata) if live
-            end
+                                endpoints: endpoint_manifest)
           end
 
           def chat(
@@ -272,7 +256,7 @@ module Legion
             parse_embedding_response(response, model: model_id)
           end
 
-          def complete(messages, tools:, temperature:, model:, params: {}, headers: {}, schema: nil, thinking: nil, # rubocop:disable Lint/UnusedMethodArgument
+          def complete(messages, tools:, temperature:, model:, params: {}, _headers: {}, schema: nil, thinking: nil,
                        tool_prefs: nil, &)
             payload = params.dup
             payload[:generationConfig] = Utils.deep_merge(payload[:generationConfig] || {},

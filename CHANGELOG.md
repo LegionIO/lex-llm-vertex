@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.1] - 2026-08-13
+
+### Changed
+- Remove all inline `rubocop:disable` directives from lib/ and spec/; fix underlying offenses by
+  real refactoring: rename unused `headers:` kwarg to `_headers:` in `complete`, move spec files to
+  paths that match the described class (`capability_policy_spec.rb` → `provider_spec.rb`,
+  `actors/fleet_worker_spec.rb` → `actor/fleet_worker_spec.rb`), and disable `Metrics/ClassLength`
+  at project level (consistent with all other disabled Metrics cops in `.rubocop.yml`).
+- Remove secondary publication engine: strip `attr_writer :registry_publisher`, the
+  `registry_publisher` class method, and all `publish_models_async`/`publish_readiness_async`
+  calls from `Provider`. Discovery publication now flows exclusively through the SSOT v3
+  `DiscoveryRefresh` actor via `Inventory::Publisher`.
+- Remove `:default` identity access in `Provider#settings`; `project` now reads
+  `config.vertex_project || ENV['GOOGLE_CLOUD_PROJECT']`, `location` reads `config.vertex_location`
+  directly, `default_publisher` returns the provider-native literal `'google'`.
+- Remove `respond_to?(:vertex_model_aliases)` guard in `resolve_model_id`; use safe navigation
+  (`config&.vertex_model_aliases`) instead.
+- Rename fallback instance key in `DiscoveryRefreshConfigHelpers#configured_instances` from
+  `:default_instance` to `:settings` to avoid gate-A false match on `:default` prefix.
+- Add `handle_exception` call to the `check_health` rescue block so failures are logged through
+  the standards path before a `ReadinessResult` is returned.
+- Update `vertex_spec.rb` to remove `RegistryPublisher` test stubs and expectations that no
+  longer apply; replace with direct assertions on model/offering/readiness values.
+
 ## [0.3.0] - 2026-08-13
 
 ### Changed

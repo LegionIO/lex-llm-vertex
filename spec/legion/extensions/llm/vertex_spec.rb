@@ -64,7 +64,6 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   let(:connection) { FakeVertexConnection.new }
   let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
   let(:model) { Legion::Extensions::Llm::Model::Info.new(id: 'gemini-2.5-flash', provider: :vertex) }
-  let(:registry_publisher) { instance_double(Legion::Extensions::Llm::RegistryPublisher) }
 
   before do
     Legion::Extensions::Llm.configure do |config|
@@ -97,10 +96,6 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   end
 
   it 'returns Model::Info objects from list_models with capabilities from STATIC_MODELS' do
-    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
-    allow(registry_publisher).to receive(:publish_models_async)
-    allow(registry_publisher).to receive(:publish_readiness_async)
-
     models = provider.list_models
 
     expect(models.size).to eq(described_class::Provider::STATIC_MODELS.size)
@@ -113,15 +108,6 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
     embed = models.find { |m| m.id == 'gemini-embedding-001' }
     expect(embed.capabilities).to include(:embedding)
-
-    expect(registry_publisher).to have_received(:publish_models_async)
-      .with(models, readiness: hash_including(provider: :vertex))
-  end
-
-  it 'uses the base RegistryPublisher from lex-llm' do
-    publisher = described_class::Provider.registry_publisher
-    expect(publisher).to be_a(Legion::Extensions::Llm::RegistryPublisher)
-    expect(publisher.provider_family).to eq(:vertex)
   end
 
   it 'maps offline offerings with Vertex family, model family, and instance location metadata' do
@@ -172,28 +158,18 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     expect(connection.gets).to be_empty
   end
 
-  it 'builds live offerings from publisher model listings and publishes Model::Info' do
-    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
-    allow(registry_publisher).to receive(:publish_models_async)
-    allow(registry_publisher).to receive(:publish_readiness_async)
-
+  it 'builds live offerings from publisher model listings' do
     offerings = provider.discover_offerings(live: true)
 
     expect(connection.gets).to eq(['projects/test-project/locations/us-central1/publishers/google/models'])
     expect(offerings.first.model).to eq(resource_name('google', 'gemini-2.5-flash'))
     expect(offerings.first.health).to include(provider: :vertex, ready: true)
-    expect(registry_publisher).to have_received(:publish_models_async)
-      .with(array_including(an_object_having_attributes(id: 'gemini-2.5-flash')),
-            readiness: hash_including(provider: :vertex, live: false))
   end
 
-  it 'publishes live readiness metadata asynchronously through the registry publisher' do
-    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
-    allow(registry_publisher).to receive(:publish_readiness_async)
-
+  it 'returns readiness metadata including health status' do
     readiness = provider.readiness(live: true)
 
-    expect(registry_publisher).to have_received(:publish_readiness_async).with(readiness)
+    expect(readiness).to include(provider: :vertex, ready: true, live: true, local: false, remote: true)
   end
 
   it 'renders generateContent requests and parses assistant responses' do
