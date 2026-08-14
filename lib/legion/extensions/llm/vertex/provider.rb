@@ -82,7 +82,10 @@ module Legion
           end
 
           def settings
-            Vertex.default_settings
+            instances = Vertex.default_settings[:instances]
+            return {} unless instances.is_a?(Hash)
+
+            instances[:default] || {}
           end
 
           def api_base
@@ -95,8 +98,8 @@ module Legion
           end
 
           def project = config.vertex_project || settings[:project] || ENV.fetch('GOOGLE_CLOUD_PROJECT', nil)
-          def location = config.vertex_location || settings[:location] || 'us-central1'
-          def default_publisher = settings[:publisher] || 'google'
+          def location = config.vertex_location || settings[:location]
+          def default_publisher = settings[:publisher]
           def models_url = publisher_parent
 
           def completion_url(model: @model)
@@ -145,7 +148,7 @@ module Legion
             super
           end
 
-          def offering_for(model:, model_family: nil, instance_id: :default, **metadata)
+          def offering_for(model:, model_family: nil, instance_id: nil, **metadata)
             model_id = model_id(model)
             publisher = metadata.delete(:publisher) || publisher_for(model_id)
             family = model_family || metadata.delete(:model_family) || model_family_for(model_id, publisher)
@@ -154,7 +157,7 @@ module Legion
               model: resource_name(model_id, publisher:),
               alias_name: alias_for(model_id),
               model_family: family,
-              instance_id: instance_id,
+              instance_id: instance_id || provider_instance_id,
               publisher: publisher,
               usage_type: metadata.delete(:usage_type) || usage_type_for(model_id),
               api: metadata.delete(:api) || api_for(model_id),
@@ -367,13 +370,14 @@ module Legion
             )
           end
 
-          def build_offering(model:, model_family:, usage_type:, publisher:, api:, instance_id: :default,
+          def build_offering(model:, model_family:, usage_type:, publisher:, api:, instance_id: nil,
                              alias_name: nil, health: {}, metadata: {})
-            policy = resolve_capability_policy(model, api:, metadata:, instance_id:)
+            resolved_instance_id = instance_id || provider_instance_id
+            policy = resolve_capability_policy(model, api:, metadata:, instance_id: resolved_instance_id)
 
             Legion::Extensions::Llm::Routing::ModelOffering.new(
               provider_family: :vertex,
-              instance_id: instance_id,
+              instance_id: resolved_instance_id,
               transport: offering_transport,
               tier: offering_tier,
               model: model,

@@ -37,8 +37,6 @@ end
 
 require 'legion/extensions/llm/vertex/callable'
 
-# rubocop:disable RSpec/MultipleMemoizedHelpers
-
 # Test-local callable that extends VertexCallable with dispatch operations
 # required by FleetWorkerExecution. Tracks inference call count for
 # conformance assertions.
@@ -68,48 +66,6 @@ class TrackingVertexCallable < Legion::Extensions::Llm::Vertex::Actor::VertexCal
   def count_tokens(model:, **)
     @call_count += 1
     { token_count: 42, model: model }
-  end
-
-  def normalize_dispatch_error(error:)
-    reason = error.message.to_s[0, 512]
-    kind = classify_dispatch_error(error: error)
-
-    Legion::Extensions::Llm::Routing::ProviderOutcome.new(
-      kind: kind,
-      reason: reason.empty? ? 'unknown dispatch error' : reason
-    )
-  end
-
-  private
-
-  def classify_dispatch_error(error:)
-    case error
-    when Faraday::ConnectionFailed then :connection_failure
-    when Faraday::TimeoutError then :timeout
-    when Faraday::ClientError then classify_client_error_ext(error: error)
-    when Faraday::ServerError then classify_server_error_ext(error: error)
-    when Legion::Extensions::Llm::OverloadedError then :overloaded
-    else :provider_error
-    end
-  end
-
-  def classify_client_error_ext(error:)
-    status = error.respond_to?(:response_status) ? error.response_status : nil
-    case status
-    when 401 then :authentication
-    when 403 then :authorization
-    when 404 then :model_missing
-    when 429 then :rate_limited
-    else :invalid_request
-    end
-  end
-
-  def classify_server_error_ext(error:)
-    status = error.respond_to?(:response_status) ? error.response_status : nil
-    case status
-    when 503, 529 then :overloaded
-    else :provider_error
-    end
   end
 end
 
@@ -170,10 +126,6 @@ module VertexSsotEvidenceHelpers
     }
   end
 
-  def connection_failure_is_unavailable?(error:)
-    error.is_a?(Faraday::ConnectionFailed)
-  end
-
   def model_not_ready_signal?(error:)
     return false unless error.respond_to?(:response) && error.response.is_a?(Hash)
 
@@ -223,7 +175,7 @@ class VertexSsotHarness
     [build_single_offering(model_id: model_id, tier: tier, now: now)]
   end
 
-  def safe_readiness(instance_config:, **) # rubocop:disable Lint/UnusedMethodArgument
+  def safe_readiness(**)
     Legion::Extensions::Llm::Inventory::ReadinessResult.new(
       ready: true,
       reason: 'Vertex models-list returned 200',
@@ -241,8 +193,15 @@ class VertexSsotHarness
     apply_vertex_escalation(outcome: outcome, error: error)
   end
 
+  # Returns a Vertex explicit flat SERVICE_UNAVAILABLE response.
+  # This is the only signal that correctly maps to :instance_unavailable per §8.
   def instance_unavailable_error
-    Faraday::ConnectionFailed.new('Connection refused - connect(2) for us-central1-aiplatform.googleapis.com:443')
+    response = {
+      status: 503,
+      headers: {},
+      body: '{"error": {"status": "SERVICE_UNAVAILABLE", "message": "The service is unavailable"}}'
+    }
+    Faraday::ServerError.new('the server responded with status 503', response)
   end
 
   def overloaded_error
@@ -266,14 +225,10 @@ class VertexSsotHarness
     ::Digest::SHA256.hexdigest(material)[0, 6]
   end
 
+  # §8 firewall: only the overloaded→model_not_ready refinement is applied here.
+  # connection_failure, timeout, generic 5xx, and all other transient errors are
+  # never promoted to instance_unavailable — they remain request-local.
   def apply_vertex_escalation(outcome:, error:)
-    # Vertex is cloud: TCP connection failure means the endpoint is truly down
-    if outcome.kind == :connection_failure && connection_failure_is_unavailable?(error: error)
-      return Legion::Extensions::Llm::Routing::ProviderOutcome.new(
-        kind: :instance_unavailable, reason: outcome.reason
-      )
-    end
-
     if outcome.kind == :overloaded && model_not_ready_signal?(error: error)
       return Legion::Extensions::Llm::Routing::ProviderOutcome.new(
         kind: :model_not_ready, reason: outcome.reason
@@ -398,10 +353,22 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   # --- Error normalization ----------------------------------------------------
 
   describe 'error normalization' do
-    it 'classifies connection failure as instance_unavailable through the harness' do
+    # §8 firewall: only an explicit flat SERVICE_UNAVAILABLE response maps to instance_unavailable
+    it 'classifies explicit SERVICE_UNAVAILABLE response as instance_unavailable' do
       outcome = ssot_harness.normalize_dispatch_error(error: ssot_harness.instance_unavailable_error)
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)
       expect(outcome.kind).to eq(:instance_unavailable)
+    end
+
+    # §8 firewall: connection_failure is request-local/terminal; never promotes to instance_unavailable
+    it 'classifies connection failure as connection_failure, never as instance_unavailable' do
+      conn_error = Faraday::ConnectionFailed.new(
+        'Connection refused - connect(2) for us-central1-aiplatform.googleapis.com:443'
+      )
+      outcome = ssot_harness.normalize_dispatch_error(error: conn_error)
+      expect(outcome.kind).to eq(:connection_failure)
+      expect(outcome.kind).not_to eq(:instance_unavailable),
+                                  '§8: connection_failure must never promote to instance_unavailable'
     end
 
     it 'classifies 503 as overloaded, never as instance_unavailable' do
@@ -438,22 +405,20 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   # --- Startup gating ---------------------------------------------------------
 
   describe 'startup gating' do
-    let(:config) { ssot_harness.instance_configs[0] }
-    let(:instance_id) { ssot_harness.instance_id(instance_config: config) }
+    let(:instance_id) { ssot_harness.instance_id(instance_config: ssot_harness.instance_configs[0]) }
     let(:key) do
       Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
         provider_family: :vertex, instance_id: instance_id
       )
     end
     let(:publisher) { Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :vertex) }
-    let(:callable) { ssot_harness.build_callable(instance_config: config) }
-    let(:coordinator) do
-      Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
-        instance_key: key, enqueue: ->(**) { true }
-      )
-    end
 
     it 'remains initializing until readiness probe succeeds' do
+      cfg = ssot_harness.instance_configs[0]
+      callable = ssot_harness.build_callable(instance_config: cfg)
+      coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
+        instance_key: key, enqueue: ->(**) { true }
+      )
       publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
 
       snapshot = registry.snapshot
@@ -462,6 +427,11 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     end
 
     it 'stays initializing after an initial readiness failure' do
+      cfg = ssot_harness.instance_configs[0]
+      callable = ssot_harness.build_callable(instance_config: cfg)
+      coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
+        instance_key: key, enqueue: ->(**) { true }
+      )
       token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
       probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
       publisher.readiness_failed(instance_id: instance_id, probe_token: probe,
@@ -622,5 +592,3 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     end
   end
 end
-
-# rubocop:enable RSpec/MultipleMemoizedHelpers

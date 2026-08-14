@@ -15,9 +15,14 @@
 - `publication_source: :provider_static_catalog` for all offerings derived from STATIC_MODELS.
 - Two distinct projects/locations produce independent instances with separate lanes.
 - Initial readiness failure leaves instance in `:initializing` state (not `:unavailable`).
-- Error normalization: connection failure escalates to `instance_unavailable` (Vertex is cloud);
-  503 with explicit SERVICE_UNAVAILABLE body escalates to `instance_unavailable`; 503/529 with
-  overload body stays `overloaded`; 429 maps to `rate_limited`.
+- Error normalization (§8 health firewall): only an explicit flat 503 SERVICE_UNAVAILABLE
+  response body maps to `instance_unavailable`; connection_failure, timeout, overload (503/529),
+  model_not_ready, 429 (rate_limited), auth errors, and generic 5xx are all request-local/terminal
+  and never mutate global instance availability.
+- Remove `instance_id: :default` from `offering_for`/`build_offering`; callers receive a
+  real project+location derived instance_id from `provider_instance_id`.
+- Read `settings[:publisher]` and `settings[:location]` directly (registered defaults applied);
+  remove inline `|| 'google'` and `|| 'us-central1'` fallback guards.
 
 ## [0.2.16] - 2026-08-04
 
