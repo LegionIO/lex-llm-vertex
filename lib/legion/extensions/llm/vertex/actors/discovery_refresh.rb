@@ -77,18 +77,16 @@ module Legion
               if model_entry[:usage_type] == :embedding
                 build_embedding_cap_evidence
               else
-                build_chat_cap_evidence(
-                  model_entry: model_entry, instance_cfg: instance_cfg
-                )
+                build_chat_cap_evidence(instance_cfg: instance_cfg)
               end
             end
 
-            def build_chat_cap_evidence(model_entry:, instance_cfg:)
+            def build_chat_cap_evidence(instance_cfg:)
               {
                 completion: cap_ev(:completion, :supported, :provider_implementation),
                 streaming: cap_ev(:streaming, :supported, :provider_implementation),
                 vision: resolve_vision_evidence(instance_cfg: instance_cfg),
-                tools: resolve_tools_evidence(model_entry: model_entry, instance_cfg: instance_cfg),
+                tools: resolve_tools_evidence(instance_cfg: instance_cfg),
                 thinking: resolve_thinking_evidence(instance_cfg: instance_cfg)
               }
             end
@@ -108,7 +106,7 @@ module Legion
               cap_ev(:vision, :unknown, src)
             end
 
-            def resolve_tools_evidence(_model_entry:, instance_cfg:)
+            def resolve_tools_evidence(instance_cfg:)
               src = instance_cfg.key?(:enable_tools) ? :instance_override : :default_false
               cap_ev(:tools, :unknown, src)
             end
