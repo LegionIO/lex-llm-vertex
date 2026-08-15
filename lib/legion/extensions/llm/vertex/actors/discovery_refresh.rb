@@ -1,16 +1,20 @@
 # frozen_string_literal: true
 
-require 'digest'
-require 'uri'
-
 begin
   require 'legion/extensions/actors/every'
 rescue LoadError => e
   warn(e.message) if $VERBOSE
 end
 
+unless defined?(Legion::Extensions::Actors::Every)
+  raise LoadError, 'LegionIO actor runtime is required for Vertex discovery refresh'
+end
+
+require 'concurrent'
+require 'faraday'
 require 'legion/extensions/llm/vertex/callable'
 require 'legion/extensions/llm/inventory/publisher'
+require 'legion/extensions/llm/inventory/scoped_refresher'
 require 'legion/extensions/llm/inventory/identity'
 require 'legion/extensions/llm/inventory/records'
 require 'legion/extensions/llm/inventory/evidence'
@@ -18,8 +22,6 @@ require 'legion/extensions/llm/inventory/probe_coordinator'
 require 'legion/extensions/llm/routing/provider_outcome'
 require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
-
-return unless defined?(Legion::Extensions::Actors::Every)
 
 module Legion
   module Extensions
@@ -30,13 +32,11 @@ module Legion
           module DiscoveryRefreshOperationEvidence
             private
 
-            def build_operation_evidence(is_embedding:, is_generate_content:)
-              now = Time.now.freeze
+            def build_operation_evidence(now:, is_embedding:, is_generate_content:)
               if is_embedding
                 build_embedding_op_evidence(now: now)
               else
-                build_chat_op_evidence(now: now,
-                                       is_gen: is_generate_content)
+                build_chat_op_evidence(now: now, is_gen: is_generate_content)
               end
             end
 
@@ -73,47 +73,47 @@ module Legion
           module DiscoveryRefreshCapabilityEvidence
             private
 
-            def build_capability_evidence(model_entry:, instance_cfg:)
+            def build_capability_evidence(model_entry:, instance_cfg:, now:)
               if model_entry[:usage_type] == :embedding
-                build_embedding_cap_evidence
+                build_embedding_cap_evidence(now: now)
               else
-                build_chat_cap_evidence(instance_cfg: instance_cfg)
+                build_chat_cap_evidence(instance_cfg: instance_cfg, now: now)
               end
             end
 
-            def build_chat_cap_evidence(instance_cfg:)
+            def build_chat_cap_evidence(instance_cfg:, now:)
               {
-                completion: cap_ev(:completion, :supported, :provider_implementation),
-                streaming: cap_ev(:streaming, :supported, :provider_implementation),
-                vision: resolve_vision_evidence(instance_cfg: instance_cfg),
-                tools: resolve_tools_evidence(instance_cfg: instance_cfg),
-                thinking: resolve_thinking_evidence(instance_cfg: instance_cfg)
+                completion: cap_ev(:completion, :supported, :provider_implementation, now),
+                streaming: cap_ev(:streaming, :supported, :provider_implementation, now),
+                vision: resolve_vision_evidence(instance_cfg: instance_cfg, now: now),
+                tools: resolve_tools_evidence(instance_cfg: instance_cfg, now: now),
+                thinking: resolve_thinking_evidence(instance_cfg: instance_cfg, now: now)
               }
             end
 
-            def build_embedding_cap_evidence
-              { embedding: cap_ev(:embedding, :supported, :provider_implementation) }
+            def build_embedding_cap_evidence(now:)
+              { embedding: cap_ev(:embedding, :supported, :provider_implementation, now) }
             end
 
-            def cap_ev(capability, status, source)
+            def cap_ev(capability, status, source, now)
               Legion::Extensions::Llm::Inventory::CapabilityEvidence.new(
-                capability: capability, status: status, source: source, observed_at: Time.now.freeze
+                capability: capability, status: status, source: source, observed_at: now
               )
             end
 
-            def resolve_vision_evidence(instance_cfg:)
+            def resolve_vision_evidence(instance_cfg:, now:)
               src = instance_cfg.key?(:enable_vision) ? :instance_override : :default_false
-              cap_ev(:vision, :unknown, src)
+              cap_ev(:vision, :unknown, src, now)
             end
 
-            def resolve_tools_evidence(instance_cfg:)
+            def resolve_tools_evidence(instance_cfg:, now:)
               src = instance_cfg.key?(:enable_tools) ? :instance_override : :default_false
-              cap_ev(:tools, :unknown, src)
+              cap_ev(:tools, :unknown, src, now)
             end
 
-            def resolve_thinking_evidence(instance_cfg:)
+            def resolve_thinking_evidence(instance_cfg:, now:)
               src = instance_cfg.key?(:enable_thinking) ? :instance_override : :default_false
-              cap_ev(:thinking, :unknown, src)
+              cap_ev(:thinking, :unknown, src, now)
             end
 
             def absent_value_evidence
@@ -131,60 +131,33 @@ module Legion
             end
           end
 
-          # Configuration and HTTP connection helpers for DiscoveryRefresh.
+          # Configuration and identity helpers for DiscoveryRefresh.
           module DiscoveryRefreshConfigHelpers
             private
 
-            def derive_instance_id(instance_cfg:)
-              project = instance_cfg[:vertex_project] || instance_cfg[:project] || 'unknown'
-              location = instance_cfg[:vertex_location] || instance_cfg[:location] || 'us-central1'
-              "#{project}:#{location}/#{credential_fingerprint(instance_cfg: instance_cfg)}"
-            end
-
-            def credential_fingerprint(instance_cfg:)
-              token = instance_cfg[:vertex_access_token] || instance_cfg[:access_token]
-              creds = instance_cfg[:vertex_credentials] || instance_cfg[:credentials]
-              material = (token || creds).to_s
-              return 'no-cred' if material.empty?
-
-              ::Digest::SHA256.hexdigest(material)[0, 6]
-            end
-
+            # Single source of truth for configured Vertex instances: the entry
+            # module's discovery, which applies the project/credential filter
+            # (Vertex.vertex_credentials_present?) and normalizes keys.
             def configured_instances
-              instances = {}
-              cfg_instances = settings[:instances]
-              if cfg_instances.is_a?(Hash)
-                cfg_instances.each { |name, config| instances[name.to_sym] = normalize_instance_config(config: config) }
-              end
-              if instances.empty?
-                top_level = build_top_level_instance
-                instances[:settings] = top_level if top_level
-              end
-              instances
+              Legion::Extensions::Llm::Vertex.discover_instances
             end
 
-            def build_top_level_instance
-              project = settings[:project]
-              return nil unless project.is_a?(String) && !project.strip.empty?
+            # Returns nil instead of a fallback identity: an instance without a
+            # resolvable project or credential is skipped by the caller. It is
+            # never claimed under a provider-fallback identity (no
+            # "unknown"/"default"/"no-cred" IDs).
+            def derive_instance_id(instance_cfg:)
+              project = instance_cfg[:vertex_project] || instance_cfg[:project]
+              return nil if project.nil? || project.to_s.strip.empty?
 
-              {
-                vertex_project: project,
-                vertex_location: settings[:location],
-                vertex_access_token: settings[:access_token],
-                vertex_credentials: settings[:credentials],
-                tier: :cloud
-              }.compact
-            end
+              fingerprint = Legion::Extensions::Llm::CredentialSources.credential_fingerprint(
+                instance_cfg[:vertex_access_token] || instance_cfg[:vertex_credentials] ||
+                  instance_cfg[:access_token] || instance_cfg[:credentials]
+              )
+              return nil if fingerprint.nil?
 
-            def normalize_instance_config(config:)
-              n = config.to_h.transform_keys(&:to_sym)
-              n[:vertex_project] ||= n.delete(:project)
-              n[:vertex_location] ||= n.delete(:location)
-              n[:vertex_api_base] ||= n.delete(:base_url) || n.delete(:api_base) || n.delete(:endpoint)
-              n[:vertex_access_token] ||= n.delete(:access_token)
-              n[:vertex_credentials] ||= n.delete(:credentials)
-              n[:tier] ||= :cloud
-              n
+              location = instance_cfg[:vertex_location] || instance_cfg[:location] || 'us-central1'
+              "#{project}:#{location}/#{fingerprint}"
             end
 
             def vertex_api_base(instance_cfg:, location:)
@@ -192,7 +165,6 @@ module Legion
             end
 
             def build_health_connection(base_url:, instance_cfg:)
-              require 'faraday'
               Faraday.new(url: base_url) do |f|
                 f.options.timeout = 10
                 f.options.open_timeout = 5
@@ -215,7 +187,8 @@ module Legion
                                                               publisher_token: state[:publisher_token])
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe
-              report_probe_result(instance_id: instance_id, probe_token: probe_token, readiness: readiness)
+              report_probe_result(instance_id: instance_id, probe_token: probe_token,
+                                  readiness: readiness, state: state)
             rescue StandardError => e
               begin
                 coordinator&.finish_probe
@@ -226,17 +199,21 @@ module Legion
             end
 
             def handle_reactive_probe(instance_id:, request:)
+              return false if @instance_states.nil?
+
               state = @instance_states[instance_id]
-              return unless state
+              return false unless state
 
               coordinator = state[:probe_coordinator]
-              return unless coordinator.begin_probe(request: request)
+              return false unless coordinator.begin_probe(request: request)
 
               probe_token = publisher.readiness_probe_started(instance_id: instance_id,
                                                               publisher_token: state[:publisher_token])
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe(request: request)
-              report_probe_result(instance_id: instance_id, probe_token: probe_token, readiness: readiness)
+              report_probe_result(instance_id: instance_id, probe_token: probe_token,
+                                  readiness: readiness, state: state)
+              true
             rescue StandardError => e
               begin
                 coordinator&.finish_probe(request: request)
@@ -244,21 +221,37 @@ module Legion
                 handle_exception(finish_e, level: :warn, operation: 'vertex.actor.reactive_probe.finish_probe')
               end
               handle_exception(e, level: :warn, operation: 'vertex.actor.reactive_probe', instance_id: instance_id)
+              false
             end
 
-            def report_probe_result(instance_id:, probe_token:, readiness:)
+            def report_probe_result(instance_id:, probe_token:, readiness:, state:)
               if readiness.ready?
-                publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token)
+                if publication_state(instance_key: state[:instance_key]) == :initializing
+                  # Initial-failure recovery: while the claim is still
+                  # :initializing a passing probe re-activates the snapshot —
+                  # activate_instance_snapshot is the only legal transition out
+                  # of :initializing (readiness_succeeded raises there).
+                  publisher.activate_instance_snapshot(instance_id: instance_id,
+                                                       publisher_token: state[:publisher_token],
+                                                       offerings: state[:offerings],
+                                                       sequence: state[:sequence], probe_token: probe_token)
+                else
+                  publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token)
+                end
               else
                 publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token,
                                            reason: readiness.reason)
               end
+              sync_instance_health(name: state[:name], instance_key: state[:instance_key], offerings: state[:offerings])
+            end
+
+            def publication_state(instance_key:)
+              publisher.snapshot.publication_status(instance_key: instance_key).state
             end
 
             def build_probe_enqueue(instance_id:)
               proc do |request:|
                 handle_reactive_probe(instance_id: instance_id, request: request)
-                true
               rescue StandardError => e
                 handle_exception(e, level: :warn, operation: 'vertex.actor.probe_enqueue', instance_id: instance_id)
                 false
@@ -290,27 +283,34 @@ module Legion
           module DiscoveryRefreshOfferingHelpers
             private
 
-            def discover_offerings_for_instance(instance_cfg:, instance_key:)
+            # The catalog is static per instance, so evidence timestamps are
+            # pinned per instance (state[:evidence_now]) — rebuilding with a
+            # fresh Time.now would make every draft unequal and force a
+            # replace_instance_snapshot churn on every tick.
+            def discover_offerings_for_instance(instance_cfg:, instance_key:, now:)
               tier = instance_cfg[:tier] || :cloud
               Provider::STATIC_MODELS.filter_map do |entry|
                 next if entry[:model].to_s.empty?
 
                 build_offering_draft(model_entry: entry, tier: tier, instance_cfg: instance_cfg,
-                                     instance_key: instance_key)
+                                     instance_key: instance_key, now: now)
               end
             rescue StandardError => e
               handle_exception(e, level: :warn, operation: 'vertex.actor.discover_offerings')
               []
             end
 
-            def build_offering_draft(model_entry:, tier:, instance_cfg:, instance_key:)
+            def build_offering_draft(model_entry:, tier:, instance_cfg:, instance_key:, now:)
               model_id = model_entry[:model]
               is_embedding = model_entry[:usage_type] == :embedding
               is_gen = model_entry.fetch(:api, :generate_content) == :generate_content
               Legion::Extensions::Llm::Inventory::OfferingDraft.new(
                 provider_native_key: model_id, model: model_id, tier: tier,
-                operation_evidence: build_operation_evidence(is_embedding: is_embedding, is_generate_content: is_gen),
-                capability_evidence: build_capability_evidence(model_entry: model_entry, instance_cfg: instance_cfg),
+                operation_evidence: build_operation_evidence(now: now,
+                                                             is_embedding: is_embedding,
+                                                             is_generate_content: is_gen),
+                capability_evidence: build_capability_evidence(model_entry: model_entry,
+                                                               instance_cfg: instance_cfg, now: now),
                 context_evidence: absent_value_evidence,
                 max_output_evidence: absent_value_evidence,
                 embedding_dimensions_evidence: absent_value_evidence,
@@ -323,26 +323,127 @@ module Legion
             end
           end
 
-          # Instance claim, startup, tick-refresh, and shutdown helpers for DiscoveryRefresh.
+          # Publisher, tick-refresh, and instance removal orchestration for
+          # DiscoveryRefresh.
           module DiscoveryRefreshLifecycleHelpers
             private
 
             def publisher
-              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :vertex)
+              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(
+                provider_family: :vertex,
+                compatibility_adapter: Legion::Extensions::Llm::Inventory::ScopedRefresher::LegacyCoordinatorAdapter.new(
+                  provider_family: :vertex
+                )
+              )
             end
 
             def initial_discovery
-              @instance_states = {}
+              @instance_states = Concurrent::Map.new
+              @initialized = true
+              reconcile_instances
+            end
+
+            # Re-scans configured instances each tick so late-configured
+            # instances appear without a restart and removed instances are
+            # retired (with their display health cleared).
+            def reconcile_instances
+              desired = {}
               configured_instances.each do |name, instance_cfg|
-                claim_and_activate_instance(name: name, instance_cfg: instance_cfg)
+                instance_id = derive_instance_id(instance_cfg: instance_cfg)
+                if instance_id.nil?
+                  log.warn(
+                    "[vertex][actor] action=skip_instance name=#{name} " \
+                    'reason=no_resolvable_project_or_credential'
+                  )
+                  next
+                end
+                if desired.key?(instance_id)
+                  log.warn(
+                    "[vertex][actor] action=skip_instance name=#{name} " \
+                    "reason=instance_id_collision instance_id=#{instance_id}"
+                  )
+                  next
+                end
+
+                desired[instance_id] = { name: name, instance_cfg: instance_cfg }
+              end
+
+              desired.each do |instance_id, entry|
+                next if @instance_states.key?(instance_id)
+
+                claim_and_activate_instance(name: entry[:name], instance_cfg: entry[:instance_cfg])
               rescue StandardError => e
                 handle_exception(e, level: :warn, operation: 'vertex.actor.claim_instance',
-                                    instance_name: name.to_s)
+                                    instance_name: entry[:name].to_s)
+              end
+
+              (@instance_states.keys - desired.keys).each do |instance_id|
+                remove_instance_state(instance_id)
               end
             end
 
+            def tick_refresh
+              reconcile_instances
+              @instance_states.each do |instance_id, state|
+                refresh_instance(instance_id: instance_id, state: state)
+              rescue StandardError => e
+                handle_exception(e, level: :warn, operation: 'vertex.actor.refresh_instance',
+                                    instance_id: instance_id)
+              end
+            end
+
+            def refresh_instance(instance_id:, state:)
+              # While :initializing there is no activated snapshot to replace;
+              # the cadence probe is the recovery path (re-activation on a
+              # passing probe).
+              return run_cadence_probe(instance_id: instance_id, state: state) if initializing?(state)
+
+              new_offerings = discover_offerings_for_instance(instance_cfg: state[:instance_cfg],
+                                                              instance_key: state[:instance_key],
+                                                              now: state[:evidence_now])
+              if new_offerings != state[:offerings]
+                state[:sequence] += 1
+                publisher.replace_instance_snapshot(instance_id: instance_id,
+                                                    publisher_token: state[:publisher_token],
+                                                    offerings: new_offerings, sequence: state[:sequence])
+                state[:offerings] = new_offerings
+                sync_instance_health(name: state[:name], instance_key: state[:instance_key], offerings: new_offerings)
+              end
+              run_cadence_probe(instance_id: instance_id, state: state)
+            end
+
+            def initializing?(state)
+              publication_state(instance_key: state[:instance_key]) == :initializing
+            end
+
+            def remove_instance_state(instance_id)
+              state = @instance_states.delete(instance_id)
+              return unless state
+
+              state[:callable].disconnect
+              publisher.remove_instance(instance_id: instance_id, publisher_token: state[:publisher_token])
+              clear_instance_health(name: state[:name])
+            rescue StandardError => e
+              handle_exception(e, level: :warn, operation: 'vertex.actor.remove_instance',
+                                  instance_id: instance_id)
+            end
+
+            def remove_all_instances
+              return unless @instance_states
+
+              @instance_states.each_key { |instance_id| remove_instance_state(instance_id) }
+            end
+          end
+
+          # Instance claim and initial-readiness activation helpers for
+          # DiscoveryRefresh.
+          module DiscoveryRefreshClaimHelpers
+            private
+
             def claim_and_activate_instance(name:, instance_cfg:)
               instance_id = derive_instance_id(instance_cfg: instance_cfg)
+              raise ArgumentError, 'claim_and_activate_instance requires a resolvable instance_id' if instance_id.nil?
+
               instance_key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
                 provider_family: :vertex, instance_id: instance_id
               )
@@ -352,15 +453,18 @@ module Legion
               )
               pub_token = publisher.claim_instance(instance_id: instance_id, callable: callable,
                                                    probe_request_handle: probe_coordinator)
-              offerings = discover_offerings_for_instance(instance_cfg: instance_cfg, instance_key: instance_key)
+              now = Time.now.freeze
+              offerings = discover_offerings_for_instance(instance_cfg: instance_cfg,
+                                                          instance_key: instance_key, now: now)
               probe_token = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: pub_token)
               activate_or_fail_instance(instance_id: instance_id, pub_token: pub_token,
                                         probe_token: probe_token, instance_cfg: instance_cfg, offerings: offerings)
               @instance_states[instance_id] = {
                 name: name, instance_key: instance_key, instance_cfg: instance_cfg,
                 callable: callable, probe_coordinator: probe_coordinator,
-                publisher_token: pub_token, sequence: 0, offerings: offerings
+                publisher_token: pub_token, sequence: 0, offerings: offerings, evidence_now: now
               }
+              sync_instance_health(name: name, instance_key: instance_key, offerings: offerings)
             end
 
             def activate_or_fail_instance(instance_id:, pub_token:, probe_token:, instance_cfg:, offerings:)
@@ -373,46 +477,100 @@ module Legion
                                            reason: readiness.reason)
               end
             end
+          end
 
-            def tick_refresh
-              @instance_states.each do |instance_id, state|
-                refresh_instance(instance_id: instance_id, state: state)
-              rescue StandardError => e
-                handle_exception(e, level: :warn, operation: 'vertex.actor.refresh_instance',
-                                    instance_id: instance_id)
+          # Display-only health/capabilities settings for DiscoveryRefresh,
+          # written AFTER each registry commit. Legacy 4-key health shape
+          # (circuit_state/denied/available/adjustment) so pre-SSOT consumers
+          # see unchanged output, plus display-only provenance fields.
+          # Display only — routing authority stays the in-memory
+          # AvailabilityFact.
+          module DiscoveryRefreshHealthDisplay
+            HEALTH_ADJUSTMENT_AVAILABLE = 0
+            HEALTH_ADJUSTMENT_DEGRADED = -50
+            CAPABILITY_NAMES_BY_OPERATION = {
+              chat: :completion, stream_chat: :streaming, embed: :embedding, image: :image,
+              transcribe: :audio_transcription, translate: :audio_transcription, speak: :audio_speech,
+              moderate: :moderation
+            }.freeze
+
+            private
+
+            def sync_instance_health(name:, instance_key:, offerings:)
+              snapshot = publisher.snapshot
+              status = snapshot.publication_status(instance_key: instance_key)
+              record = snapshot.instance(instance_key: instance_key)
+              availability = record&.availability
+              available = availability&.state == :available
+
+              instances_settings = settings[:instances] || (settings[:instances] = {})
+              instance_settings = instances_settings[name] || (instances_settings[name] = {})
+              instance_settings[:health] = {
+                circuit_state: circuit_state_for(availability),
+                denied: false,
+                available: available,
+                adjustment: available ? HEALTH_ADJUSTMENT_AVAILABLE : HEALTH_ADJUSTMENT_DEGRADED,
+                reason: availability&.reason || status.last_error,
+                observed_at: observed_at_display(availability),
+                last_probe_outcome: status.last_probe_outcome,
+                source: :ssot_discovery_actor
+              }.compact
+              instance_settings[:capabilities] = supported_capabilities(offerings)
+            rescue StandardError => e
+              handle_exception(e, level: :warn, operation: 'vertex.actor.sync_health',
+                                  instance_id: instance_key.instance_id)
+            end
+
+            def clear_instance_health(name:)
+              instance_settings = settings[:instances][name]
+              return unless instance_settings.is_a?(Hash)
+
+              instance_settings.delete(:health)
+              instance_settings.delete(:capabilities)
+            rescue StandardError => e
+              handle_exception(e, level: :warn, operation: 'vertex.actor.clear_health',
+                                  instance_name: name.to_s)
+            end
+
+            def circuit_state_for(availability)
+              case availability&.state
+              when :available then :closed
+              when :unavailable then :open
+              else :half_open
               end
             end
 
-            def refresh_instance(instance_id:, state:)
-              new_offerings = discover_offerings_for_instance(instance_cfg: state[:instance_cfg],
-                                                              instance_key: state[:instance_key])
-              if new_offerings != state[:offerings]
-                state[:sequence] += 1
-                publisher.replace_instance_snapshot(instance_id: instance_id,
-                                                    publisher_token: state[:publisher_token],
-                                                    offerings: new_offerings, sequence: state[:sequence])
-                state[:offerings] = new_offerings
+            def supported_capabilities(offerings)
+              capabilities = []
+              offerings.each do |draft|
+                draft.operation_evidence.each do |operation, evidence|
+                  next unless evidence.status == :supported
+
+                  cap = CAPABILITY_NAMES_BY_OPERATION.fetch(operation, operation)
+                  capabilities << cap unless capabilities.include?(cap)
+                end
+                draft.capability_evidence.each do |capability, evidence|
+                  capabilities << capability if evidence.status == :supported && !capabilities.include?(capability)
+                end
               end
-              run_cadence_probe(instance_id: instance_id, state: state)
+              capabilities.sort
             end
 
-            def remove_all_instances
-              return unless @instance_states
+            def observed_at_display(availability)
+              observed_at = availability&.observed_at
+              return nil unless observed_at
 
-              @instance_states.each do |instance_id, state|
-                publisher.remove_instance(instance_id: instance_id, publisher_token: state[:publisher_token])
-              rescue StandardError => e
-                handle_exception(e, level: :warn, operation: 'vertex.actor.remove_instance',
-                                    instance_id: instance_id)
-              end
-              @instance_states.clear
+              observed_at.getutc.strftime('%Y-%m-%dT%H:%M:%SZ')
             end
           end
 
           # SSOT v3 periodic discovery actor for Vertex AI provider instances.
-          # Claims instances, discovers models from STATIC_MODELS catalog, probes
-          # health via the non-inference models-list endpoint, and publishes
-          # complete OfferingDraft snapshots through the Inventory::Publisher.
+          # Claims configured instances, discovers models from the STATIC_MODELS
+          # catalog, probes health via the non-inference models-list endpoint,
+          # and publishes complete OfferingDraft snapshots through the
+          # Inventory::Publisher. Owns the refresh cadence, recovers
+          # initial-readiness failures, and writes the display-only
+          # health/capabilities settings after each registry commit.
           class DiscoveryRefresh < Legion::Extensions::Actors::Every
             include Legion::Extensions::Helpers::Lex
             include Legion::Logging::Helper
@@ -421,9 +579,13 @@ module Legion
             include DiscoveryRefreshConfigHelpers
             include DiscoveryRefreshProbeHelpers
             include DiscoveryRefreshOfferingHelpers
+            include DiscoveryRefreshClaimHelpers
+            include DiscoveryRefreshHealthDisplay
             include DiscoveryRefreshLifecycleHelpers
 
-            def self.every_seconds = 3600
+            # Guards a broken discovery config (missing or non-positive value);
+            # the registered default (lex-llm ProviderSettings) is 300 seconds.
+            FALLBACK_DISCOVERY_INTERVAL_SECONDS = 300
 
             def runner_class    = self.class
             def runner_function = 'manual'
@@ -432,8 +594,12 @@ module Legion
             def check_subtask?  = false
             def generate_task?  = false
 
+            # The actor owns the discovery cadence. Read the registered
+            # interval so the operator knob is honored and the timer never
+            # receives nil.
             def time
-              self.class.every_seconds
+              interval = settings.dig(:discovery, :interval_seconds)
+              interval.is_a?(Numeric) && interval.positive? ? interval : FALLBACK_DISCOVERY_INTERVAL_SECONDS
             end
 
             def manual
@@ -441,7 +607,6 @@ module Legion
                 tick_refresh
               else
                 initial_discovery
-                @initialized = true
               end
             rescue StandardError => e
               handle_exception(e, level: :warn, operation: 'vertex.actor.discovery_refresh')

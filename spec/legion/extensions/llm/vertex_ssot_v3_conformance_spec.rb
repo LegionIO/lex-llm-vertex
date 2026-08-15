@@ -3,7 +3,6 @@
 require 'spec_helper'
 require 'faraday'
 require 'digest'
-require 'uri'
 
 require 'legion/extensions/llm/inventory/publisher'
 require 'legion/extensions/llm/inventory/registry'
@@ -16,56 +15,64 @@ require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
 require 'legion/extensions/llm/fleet/worker_execution'
 require 'legion/extensions/llm/fleet/protocol'
+# The actor is required (not just stubbed around) so its real helpers back the
+# harness and its manual/shutdown logic is covered.
+require 'legion/extensions/llm/vertex/actors/discovery_refresh'
 
-# Stub the actor runtime so the DiscoveryRefresh class can be loaded in test.
-module Legion
-  module Extensions
-    module Actors
-      unless const_defined?(:Every, false)
-        # Stub base class for discovery actor loading in test context
-        class Every
-          def self.every_seconds = 3600
-        end
+# Builds a genuine Faraday error the way production raises it: a real request
+# through the raise_error middleware (the same middleware the provider
+# connection installs), so the error carries the adapter-produced response
+# shape — never a hand-assembled hash the spec invents.
+module VertexSsotFaraday
+  module_function
+
+  def error_for(status:, body:)
+    connection = Faraday.new do |f|
+      f.response :raise_error
+      f.adapter :test do |stub|
+        stub.post(/.*/) { [status, {}, body] }
       end
     end
-
-    module Helpers
-      module Lex; end unless const_defined?(:Lex, false)
+    begin
+      connection.post('/v1/conformance', {})
+      raise "expected Faraday to raise for status #{status}"
+    rescue Faraday::ClientError, Faraday::ServerError => e
+      e
     end
   end
 end
 
-require 'legion/extensions/llm/vertex/callable'
+# Records HTTP posts so the callable's REAL Provider render path can be driven
+# offline. The harness dispatch stubs intentionally bypass this path; the
+# raw-string model examples are what would catch a NoMethodError landmine if
+# the render path expected a Model::Info where the fleet passes a raw string.
+class VertexSsotFakeConnection
+  attr_reader :posts
 
-# Test-local callable that extends VertexCallable with dispatch operations
-# required by FleetWorkerExecution. Tracks inference call count for
-# conformance assertions.
-class TrackingVertexCallable < Legion::Extensions::Llm::Vertex::Actor::VertexCallable
-  attr_reader :call_count
-
-  def initialize(instance_cfg:, logger:)
-    super
-    @call_count = 0
+  def initialize
+    @posts = []
   end
 
-  def chat(model:, **)
-    @call_count += 1
-    { role: 'assistant', content: 'test response', model: model }
+  def post(url, payload)
+    @posts << [url, payload]
+    Struct.new(:body).new(body_for(url))
   end
 
-  def stream_chat(model:, **)
-    @call_count += 1
-    { role: 'assistant', content: 'streamed response', model: model }
-  end
+  def close = nil
 
-  def embed(model:, **)
-    @call_count += 1
-    { embedding: [0.1, 0.2, 0.3], model: model }
-  end
+  private
 
-  def count_tokens(model:, **)
-    @call_count += 1
-    { token_count: 42, model: model }
+  def body_for(url)
+    case url
+    when /:predict\z/ then { 'predictions' => [{ 'embeddings' => { 'values' => [0.1, 0.2] } }] }
+    when /:countTokens\z/ then { 'totalTokens' => 7 }
+    else
+      {
+        'modelVersion' => 'gemini-2.5-flash',
+        'candidates' => [{ 'content' => { 'parts' => [{ 'text' => 'done' }] } }],
+        'usageMetadata' => { 'promptTokenCount' => 1, 'candidatesTokenCount' => 2 }
+      }
+    end
   end
 end
 
@@ -127,9 +134,7 @@ module VertexSsotEvidenceHelpers
   end
 
   def model_not_ready_signal?(error:)
-    return false unless error.respond_to?(:response) && error.response.is_a?(Hash)
-
-    body = error.response[:body].to_s.downcase
+    body = error.response_body.to_s.downcase
     body.include?('model not ready') || body.include?('model_not_ready')
   end
 end
@@ -137,7 +142,12 @@ end
 # Harness class for Vertex SSOT v3 conformance testing. Implements the full
 # interface required by the shared conformance examples without touching
 # any external service. Defined inline per the conformance kit contract.
+#
+# The harness drives the PRODUCTION callable (VertexCallable) and the actor's
+# real identity helpers — no spec-local re-implementation of instance_id or
+# credential fingerprinting, and no dispatch stubs on the callable.
 class VertexSsotHarness
+  include RSpec::Mocks::ExampleMethods
   include VertexSsotEvidenceHelpers
 
   INSTANCE_CONFIGS = [
@@ -155,18 +165,37 @@ class VertexSsotHarness
     }.freeze
   ].freeze
 
+  DISPATCH_OPERATIONS = %i[chat stream_chat embed count_tokens].freeze
+
   def provider_family = :vertex
   def instance_configs = INSTANCE_CONFIGS
 
-  def instance_id(instance_config:)
-    project = instance_config[:vertex_project] || instance_config[:project] || 'unknown'
-    location = instance_config[:vertex_location] || instance_config[:location] || 'us-central1'
-    fingerprint = credential_fingerprint(instance_config: instance_config)
-    "#{project}:#{location}/#{fingerprint}"
+  def actor
+    @actor ||= Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh.new
   end
 
+  # The actor's real identity derivation (single source of truth — no
+  # duplicated fingerprint/ID logic in the harness).
+  def instance_id(instance_config:)
+    actor.send(:derive_instance_id, instance_cfg: instance_config)
+  end
+
+  # The PRODUCTION callable. Its wrapped Provider's dispatch operations are
+  # intercepted (no network) so the fleet contract — callable signature,
+  # delegation, kwargs passthrough — is what is under test.
   def build_callable(instance_config:)
-    TrackingVertexCallable.new(instance_cfg: instance_config, logger: Logger.new(File::NULL))
+    callable = Legion::Extensions::Llm::Vertex::Actor::VertexCallable.new(
+      instance_cfg: instance_config, logger: Logger.new(File::NULL)
+    )
+    @dispatch_counts ||= {}
+    @dispatch_counts[callable] = 0
+    DISPATCH_OPERATIONS.each do |operation|
+      allow(callable.provider).to receive(operation) do |*_args, **_kwargs, &_block|
+        @dispatch_counts[callable] += 1
+        fake_dispatch_result(operation)
+      end
+    end
+    callable
   end
 
   def build_offering_drafts(tier: :cloud, **)
@@ -184,45 +213,41 @@ class VertexSsotHarness
   end
 
   def inference_call_count(callable:)
-    callable.respond_to?(:call_count) ? callable.call_count : 0
+    @dispatch_counts.fetch(callable, 0)
   end
 
   def normalize_dispatch_error(error:)
-    callable = build_callable(instance_config: instance_configs.first)
+    callable = Legion::Extensions::Llm::Vertex::Actor::VertexCallable.new(
+      instance_cfg: instance_configs.first, logger: Logger.new(File::NULL)
+    )
     outcome = callable.normalize_dispatch_error(error: error)
     apply_vertex_escalation(outcome: outcome, error: error)
   end
 
-  # Returns a Vertex explicit flat SERVICE_UNAVAILABLE response.
-  # This is the only signal that correctly maps to :instance_unavailable per §8.
+  # Real Faraday-raised errors (raise_error middleware round-trip) — the only
+  # shapes production produces.
   def instance_unavailable_error
-    response = {
-      status: 503,
-      headers: {},
-      body: '{"error": {"status": "SERVICE_UNAVAILABLE", "message": "The service is unavailable"}}'
-    }
-    Faraday::ServerError.new('the server responded with status 503', response)
+    VertexSsotFaraday.error_for(
+      status: 503, body: '{"error": {"status": "SERVICE_UNAVAILABLE", "message": "The service is unavailable"}}'
+    )
   end
 
   def overloaded_error
-    response = { status: 503, headers: {}, body: '{"error": {"code": 503, "message": "Server overloaded"}}' }
-    Faraday::ServerError.new('the server responded with status 503', response)
+    VertexSsotFaraday.error_for(status: 503, body: '{"error": {"code": 503, "message": "Server overloaded"}}')
   end
 
   def model_not_ready_error
-    response = { status: 503, headers: {}, body: '{"error": {"code": 503, "message": "Model not ready"}}' }
-    Faraday::ServerError.new('the server responded with status 503 - model not ready', response)
+    VertexSsotFaraday.error_for(status: 503, body: '{"error": {"code": 503, "message": "Model not ready"}}')
   end
 
   private
 
-  def credential_fingerprint(instance_config:)
-    token = instance_config[:vertex_access_token] || instance_config[:access_token]
-    creds = instance_config[:vertex_credentials] || instance_config[:credentials]
-    material = (token || creds).to_s
-    return 'no-cred' if material.empty?
-
-    ::Digest::SHA256.hexdigest(material)[0, 6]
+  def fake_dispatch_result(operation)
+    case operation
+    when :embed then Legion::Extensions::Llm::Embedding.new(vectors: [0.1, 0.2, 0.3], model: 'conformance')
+    when :count_tokens then { input_tokens: 42, raw: {} }
+    else Legion::Extensions::Llm::Message.new(role: :assistant, content: 'conformance response')
+    end
   end
 
   # §8 firewall: only the overloaded→model_not_ready refinement is applied here.
@@ -250,9 +275,7 @@ class VertexSsotHarness
       embedding_dimensions_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(
         status: :unknown, source: :absent
       ),
-      model_revision_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(
-        status: :unknown, source: :absent
-      ),
+      model_revision_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent),
       tokenizer_evidence: Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent),
       quota_domains: {}, metadata: { raw_model: model_id }, publication_source: :provider_static_catalog
     )
@@ -270,9 +293,11 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   # --- Vertex-specific instance identity derivation ---------------------------
 
   describe 'instance identity derivation' do
-    it 'derives instance_id as project:location/fingerprint' do
+    it 'derives instance_id as project:location/fingerprint via the canonical 8-char fingerprint' do
       config = { vertex_project: 'my-project', vertex_location: 'us-central1', vertex_access_token: 'ya29.token' }
-      fingerprint = Digest::SHA256.hexdigest('ya29.token')[0, 6]
+      fingerprint = Legion::Extensions::Llm::CredentialSources.credential_fingerprint('ya29.token')
+      expect(fingerprint).to eq(Digest::SHA256.hexdigest('ya29.token')[0, 8])
+
       expect(ssot_harness.instance_id(instance_config: config)).to eq("my-project:us-central1/#{fingerprint}")
     end
 
@@ -288,9 +313,14 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       expect(id_a).to eq(id_b)
     end
 
-    it 'uses no-cred fingerprint when no credentials present' do
+    it 'returns nil for a credential-less config so the actor skips it (no fallback identity)' do
       config = { vertex_project: 'proj', vertex_location: 'us-east1' }
-      expect(ssot_harness.instance_id(instance_config: config)).to eq('proj:us-east1/no-cred')
+      expect(ssot_harness.instance_id(instance_config: config)).to be_nil
+    end
+
+    it 'returns nil for a project-less config so the actor skips it (no fallback identity)' do
+      config = { vertex_location: 'us-east1', vertex_access_token: 'ya29.token' }
+      expect(ssot_harness.instance_id(instance_config: config)).to be_nil
     end
   end
 
@@ -354,8 +384,11 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
   describe 'error normalization' do
     # §8 firewall: only an explicit flat SERVICE_UNAVAILABLE response maps to instance_unavailable
-    it 'classifies explicit SERVICE_UNAVAILABLE response as instance_unavailable' do
-      outcome = ssot_harness.normalize_dispatch_error(error: ssot_harness.instance_unavailable_error)
+    it 'classifies a real Faraday-raised SERVICE_UNAVAILABLE response as instance_unavailable' do
+      error = ssot_harness.instance_unavailable_error
+      expect(error.response).to be_a(Hash), 'error must come from a real raise_error round-trip'
+
+      outcome = ssot_harness.normalize_dispatch_error(error: error)
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)
       expect(outcome.kind).to eq(:instance_unavailable)
     end
@@ -371,7 +404,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
                                   '§8: connection_failure must never promote to instance_unavailable'
     end
 
-    it 'classifies 503 as overloaded, never as instance_unavailable' do
+    it 'classifies a real 503 as overloaded, never as instance_unavailable' do
       outcome = ssot_harness.normalize_dispatch_error(error: ssot_harness.overloaded_error)
       expect(outcome.kind).to eq(:overloaded)
       expect(outcome.kind).not_to eq(:instance_unavailable)
@@ -385,8 +418,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     it 'never returns instance_unavailable from the callable for any server error' do
       callable = ssot_harness.build_callable(instance_config: ssot_harness.instance_configs[0])
       [500, 502, 503, 504, 529].each do |status|
-        response = { status: status, headers: {}, body: '' }
-        error = Faraday::ServerError.new(status.to_s, response)
+        error = VertexSsotFaraday.error_for(status: status, body: '')
         outcome = callable.normalize_dispatch_error(error: error)
         expect(outcome.kind).not_to eq(:instance_unavailable),
                                     "status #{status} should not map to instance_unavailable"
@@ -395,8 +427,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
     it 'classifies 429 as rate_limited' do
       callable = ssot_harness.build_callable(instance_config: ssot_harness.instance_configs[0])
-      response = { status: 429, headers: {}, body: '' }
-      error = Faraday::ClientError.new('429', response)
+      error = VertexSsotFaraday.error_for(status: 429, body: '')
       outcome = callable.normalize_dispatch_error(error: error)
       expect(outcome.kind).to eq(:rate_limited)
     end
@@ -453,22 +484,83 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       )
     end
 
-    it 'responds to disconnect' do
-      expect(callable).to respond_to(:disconnect)
-      expect(callable).to respond_to(:disconnected?)
+    it 'implements the fleet dispatch operations' do
+      expect(callable).to respond_to(:chat)
+      expect(callable).to respond_to(:stream_chat)
+      expect(callable).to respond_to(:embed)
+      expect(callable).to respond_to(:count_tokens)
     end
 
-    it 'responds to normalize_dispatch_error with kwargs' do
+    it 'responds to disconnect and normalize_dispatch_error' do
+      expect(callable).to respond_to(:disconnect)
+      expect(callable).to respond_to(:disconnected?)
       expect(callable).to respond_to(:normalize_dispatch_error)
+    end
+
+    it 'wraps a per-instance Vertex Provider' do
+      expect(callable.provider).to be_a(Legion::Extensions::Llm::Vertex::Provider)
     end
 
     it 'is not disconnected on creation' do
       expect(callable.disconnected?).to be(false)
     end
 
-    it 'becomes disconnected after disconnect' do
+    it 'closes the wrapped Provider on disconnect' do
+      expect(callable.provider.connection).not_to be_nil
       callable.disconnect
       expect(callable.disconnected?).to be(true)
+      expect(callable.provider.connection).to be_nil
+    end
+
+    # D15: fleet WorkerExecution and legion-llm SelectionDispatch both pass
+    # model: as a RAW STRING (the offering model id). The Vertex render path
+    # (Provider#model_id) accepts a plain string, so the callable delegates
+    # without wrapping. These drive the real render path — not the harness
+    # dispatch stubs — to keep that guarantee covered.
+    describe 'raw-string model dispatch (D15)' do
+      let(:fake_connection) { VertexSsotFakeConnection.new }
+      let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
+
+      before { callable.provider.instance_variable_set(:@connection, fake_connection) }
+
+      it 'chats through the real render path with a raw-string model' do
+        result = callable.chat(messages: [message], model: 'gemini-2.5-flash')
+
+        expect(fake_connection.posts.first[0]).to eq(
+          'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent'
+        )
+        expect(result).to be_a(Legion::Extensions::Llm::Message)
+        expect(result.content).to eq('done')
+      end
+
+      it 'stream_chats through the real render path with a raw-string model' do
+        result = callable.stream_chat(messages: [message], model: 'gemini-2.5-flash')
+
+        expect(fake_connection.posts.first[0]).to eq(
+          'projects/my-project-alpha/locations/us-central1/publishers/google/models/' \
+          'gemini-2.5-flash:streamGenerateContent?alt=sse'
+        )
+        expect(result).to be_a(Legion::Extensions::Llm::Message)
+      end
+
+      it 'embeds through the real render path with a raw-string model' do
+        result = callable.embed(text: 'hello', model: 'gemini-embedding-001')
+
+        expect(fake_connection.posts.first[0]).to eq(
+          'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-embedding-001:predict'
+        )
+        expect(result).to be_a(Legion::Extensions::Llm::Embedding)
+        expect(result.vectors).to eq([0.1, 0.2])
+      end
+
+      it 'counts tokens through the real render path with a raw-string model' do
+        result = callable.count_tokens(messages: [message], model: 'gemini-2.5-flash')
+
+        expect(fake_connection.posts.first[0]).to eq(
+          'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-2.5-flash:countTokens'
+        )
+        expect(result).to include(input_tokens: 7)
+      end
     end
 
     it 'returns a ProviderOutcome from normalize_dispatch_error' do
