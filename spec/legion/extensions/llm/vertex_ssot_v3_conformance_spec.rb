@@ -150,34 +150,44 @@ class VertexSsotHarness
   include RSpec::Mocks::ExampleMethods
   include VertexSsotEvidenceHelpers
 
-  INSTANCE_CONFIGS = [
-    {
+  # Synthetic operator config in the shape of the frozen employee config: the
+  # NAME (hash key) is the instance identity the router keys instances.<name>
+  # lookups by (SSOT v3 fail-forward); the derived project:location/
+  # fingerprint is the secondary physical_id for dedup/diagnostics only.
+  NAMED_INSTANCE_CONFIGS = {
+    'conformance-alpha' => {
       vertex_project: 'my-project-alpha',
       vertex_location: 'us-central1',
       vertex_access_token: 'ya29.test-token-alpha',
       tier: :cloud
     }.freeze,
-    {
+    'conformance-beta' => {
       vertex_project: 'my-project-beta',
       vertex_location: 'europe-west4',
       vertex_access_token: 'ya29.test-token-beta',
       tier: :cloud
     }.freeze
-  ].freeze
+  }.freeze
 
   DISPATCH_OPERATIONS = %i[chat stream_chat embed count_tokens].freeze
 
   def provider_family = :vertex
-  def instance_configs = INSTANCE_CONFIGS
+  def instance_configs = NAMED_INSTANCE_CONFIGS.values
 
   def actor
     @actor ||= Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh.new
   end
 
-  # The actor's real identity derivation (single source of truth — no
-  # duplicated fingerprint/ID logic in the harness).
+  # The config NAME — the instance identity (the operator's instances.<name>
+  # key; the fixture names stand in for operator names).
   def instance_id(instance_config:)
-    actor.send(:derive_instance_id, instance_cfg: instance_config)
+    NAMED_INSTANCE_CONFIGS.key(instance_config)
+  end
+
+  # The actor's real secondary physical-id derivation (single source of
+  # truth — no duplicated fingerprint/ID logic in the harness).
+  def physical_id(instance_config:)
+    actor.send(:derive_physical_id, instance_cfg: instance_config)
   end
 
   # The PRODUCTION callable. Its wrapped Provider's dispatch operations are
@@ -290,19 +300,12 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
   it_behaves_like 'an SSOT v3 provider adapter'
 
-  # --- Vertex-specific instance identity derivation ---------------------------
+  # --- Vertex-specific instance identity (name + secondary physical_id) -------
 
-  describe 'instance identity derivation' do
-    it 'derives instance_id as project:location/fingerprint via the canonical 8-char fingerprint' do
-      config = { vertex_project: 'my-project', vertex_location: 'us-central1', vertex_access_token: 'ya29.token' }
-      fingerprint = Legion::Extensions::Llm::CredentialSources.credential_fingerprint('ya29.token')
-      expect(fingerprint).to eq(Digest::SHA256.hexdigest('ya29.token')[0, 8])
-
-      expect(ssot_harness.instance_id(instance_config: config)).to eq("my-project:us-central1/#{fingerprint}")
-    end
-
-    it 'produces distinct instance IDs for two different project/location combos' do
+  describe 'instance identity' do
+    it 'uses the operator config name as the instance_id (the router instances.<name> key)' do
       ids = ssot_harness.instance_configs.map { |cfg| ssot_harness.instance_id(instance_config: cfg) }
+      expect(ids).to eq(%w[conformance-alpha conformance-beta])
       expect(ids.uniq.size).to eq(2)
     end
 
@@ -313,14 +316,22 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       expect(id_a).to eq(id_b)
     end
 
-    it 'returns nil for a credential-less config so the actor skips it (no fallback identity)' do
-      config = { vertex_project: 'proj', vertex_location: 'us-east1' }
-      expect(ssot_harness.instance_id(instance_config: config)).to be_nil
+    it 'derives the secondary physical_id as project:location/fingerprint (canonical 8-char fingerprint)' do
+      config = { vertex_project: 'my-project', vertex_location: 'us-central1', vertex_access_token: 'ya29.token' }
+      fingerprint = Legion::Extensions::Llm::CredentialSources.credential_fingerprint('ya29.token')
+      expect(fingerprint).to eq(Digest::SHA256.hexdigest('ya29.token')[0, 8])
+
+      expect(ssot_harness.physical_id(instance_config: config)).to eq("my-project:us-central1/#{fingerprint}")
     end
 
-    it 'returns nil for a project-less config so the actor skips it (no fallback identity)' do
+    it 'returns nil physical_id for a credential-less config so the actor skips it (no fallback identity)' do
+      config = { vertex_project: 'proj', vertex_location: 'us-east1' }
+      expect(ssot_harness.physical_id(instance_config: config)).to be_nil
+    end
+
+    it 'returns nil physical_id for a project-less config so the actor skips it (no fallback identity)' do
       config = { vertex_location: 'us-east1', vertex_access_token: 'ya29.token' }
-      expect(ssot_harness.instance_id(instance_config: config)).to be_nil
+      expect(ssot_harness.physical_id(instance_config: config)).to be_nil
     end
   end
 
@@ -330,19 +341,23 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     def bring_up_instance(config, tier: :cloud)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :vertex)
       instance_id = ssot_harness.instance_id(instance_config: config)
+      physical_id = ssot_harness.physical_id(instance_config: config)
       key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :vertex, instance_id: instance_id
+        provider_family: :vertex, instance_id: instance_id, physical_id: physical_id
       )
       callable = ssot_harness.build_callable(instance_config: config)
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
 
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(instance_id: instance_id, callable: callable,
+                                       probe_request_handle: coordinator, physical_id: physical_id)
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token,
+                                                physical_id: physical_id)
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: tier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe,
+        physical_id: physical_id
       )
 
       { publisher: publisher, key: key, callable: callable, token: token, drafts: drafts, coordinator: coordinator }

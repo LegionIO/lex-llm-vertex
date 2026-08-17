@@ -142,11 +142,17 @@ module Legion
               Legion::Extensions::Llm::Vertex.discover_instances
             end
 
-            # Returns nil instead of a fallback identity: an instance without a
+            # Derives the SECONDARY physical identity (project:location/
+            # credential-fingerprint) carried as InstanceKey#physical_id for
+            # dedup and diagnostics. It is NOT the instance identity — the
+            # identity is the operator's config name (see
+            # claim_and_activate_instance).
+            #
+            # Returns nil instead of a fallback: an instance without a
             # resolvable project or credential is skipped by the caller. It is
             # never claimed under a provider-fallback identity (no
             # "unknown"/"default"/"no-cred" IDs).
-            def derive_instance_id(instance_cfg:)
+            def derive_physical_id(instance_cfg:)
               project = instance_cfg[:vertex_project] || instance_cfg[:project]
               return nil if project.nil? || project.to_s.strip.empty?
 
@@ -184,7 +190,8 @@ module Legion
               return unless coordinator.begin_probe
 
               probe_token = publisher.readiness_probe_started(instance_id: instance_id,
-                                                              publisher_token: state[:publisher_token])
+                                                              publisher_token: state[:publisher_token],
+                                                              physical_id: state[:physical_id])
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe
               report_probe_result(instance_id: instance_id, probe_token: probe_token,
@@ -208,7 +215,8 @@ module Legion
               return false unless coordinator.begin_probe(request: request)
 
               probe_token = publisher.readiness_probe_started(instance_id: instance_id,
-                                                              publisher_token: state[:publisher_token])
+                                                              publisher_token: state[:publisher_token],
+                                                              physical_id: state[:physical_id])
               readiness = check_health(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe(request: request)
               report_probe_result(instance_id: instance_id, probe_token: probe_token,
@@ -234,13 +242,15 @@ module Legion
                   publisher.activate_instance_snapshot(instance_id: instance_id,
                                                        publisher_token: state[:publisher_token],
                                                        offerings: state[:offerings],
-                                                       sequence: state[:sequence], probe_token: probe_token)
+                                                       sequence: state[:sequence], probe_token: probe_token,
+                                                       physical_id: state[:physical_id])
                 else
-                  publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token)
+                  publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token,
+                                                physical_id: state[:physical_id])
                 end
               else
                 publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token,
-                                           reason: readiness.reason)
+                                           reason: readiness.reason, physical_id: state[:physical_id])
               end
               sync_instance_health(name: state[:name], instance_key: state[:instance_key], offerings: state[:offerings])
             end
@@ -346,26 +356,25 @@ module Legion
             # Re-scans configured instances each tick so late-configured
             # instances appear without a restart and removed instances are
             # retired (with their display health cleared).
+            # Instance identity is the operator's CONFIG NAME (the key the
+            # router's instances.<name> settings lookups use); names are
+            # unique by construction, so two names pointing at the same
+            # physical endpoint stay distinct instances (the derived
+            # physical_id is diagnostic, never a dedup key that collapses
+            # operator-named instances).
             def reconcile_instances
               desired = {}
               configured_instances.each do |name, instance_cfg|
-                instance_id = derive_instance_id(instance_cfg: instance_cfg)
-                if instance_id.nil?
+                physical_id = derive_physical_id(instance_cfg: instance_cfg)
+                if physical_id.nil?
                   log.warn(
                     "[vertex][actor] action=skip_instance name=#{name} " \
                     'reason=no_resolvable_project_or_credential'
                   )
                   next
                 end
-                if desired.key?(instance_id)
-                  log.warn(
-                    "[vertex][actor] action=skip_instance name=#{name} " \
-                    "reason=instance_id_collision instance_id=#{instance_id}"
-                  )
-                  next
-                end
 
-                desired[instance_id] = { name: name, instance_cfg: instance_cfg }
+                desired[name.to_s] = { name: name, instance_cfg: instance_cfg }
               end
 
               desired.each do |instance_id, entry|
@@ -405,7 +414,8 @@ module Legion
                 state[:sequence] += 1
                 publisher.replace_instance_snapshot(instance_id: instance_id,
                                                     publisher_token: state[:publisher_token],
-                                                    offerings: new_offerings, sequence: state[:sequence])
+                                                    offerings: new_offerings, sequence: state[:sequence],
+                                                    physical_id: state[:physical_id])
                 state[:offerings] = new_offerings
                 sync_instance_health(name: state[:name], instance_key: state[:instance_key], offerings: new_offerings)
               end
@@ -421,7 +431,8 @@ module Legion
               return unless state
 
               state[:callable].disconnect
-              publisher.remove_instance(instance_id: instance_id, publisher_token: state[:publisher_token])
+              publisher.remove_instance(instance_id: instance_id, publisher_token: state[:publisher_token],
+                                        physical_id: state[:physical_id])
               clear_instance_health(name: state[:name])
             rescue StandardError => e
               handle_exception(e, level: :warn, operation: 'vertex.actor.remove_instance',
@@ -440,41 +451,51 @@ module Legion
           module DiscoveryRefreshClaimHelpers
             private
 
+            # Instance identity is the operator's CONFIG NAME (the key the
+            # router's instances.<name> lookups use). The derived
+            # project:location/fingerprint rides along as the secondary
+            # physical_id field for dedup and diagnostics only.
             def claim_and_activate_instance(name:, instance_cfg:)
-              instance_id = derive_instance_id(instance_cfg: instance_cfg)
-              raise ArgumentError, 'claim_and_activate_instance requires a resolvable instance_id' if instance_id.nil?
+              instance_id = name.to_s
+              physical_id = derive_physical_id(instance_cfg: instance_cfg)
+              raise ArgumentError, 'claim_and_activate_instance requires a resolvable physical_id' if physical_id.nil?
 
               instance_key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-                provider_family: :vertex, instance_id: instance_id
+                provider_family: :vertex, instance_id: instance_id, physical_id: physical_id
               )
               callable = VertexCallable.new(instance_cfg: instance_cfg, logger: log)
               probe_coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
                 instance_key: instance_key, enqueue: build_probe_enqueue(instance_id: instance_id)
               )
               pub_token = publisher.claim_instance(instance_id: instance_id, callable: callable,
-                                                   probe_request_handle: probe_coordinator)
+                                                   probe_request_handle: probe_coordinator, physical_id: physical_id)
               now = Time.now.freeze
               offerings = discover_offerings_for_instance(instance_cfg: instance_cfg,
                                                           instance_key: instance_key, now: now)
-              probe_token = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: pub_token)
+              probe_token = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: pub_token,
+                                                              physical_id: physical_id)
               activate_or_fail_instance(instance_id: instance_id, pub_token: pub_token,
-                                        probe_token: probe_token, instance_cfg: instance_cfg, offerings: offerings)
+                                        probe_token: probe_token, instance_cfg: instance_cfg, offerings: offerings,
+                                        physical_id: physical_id)
               @instance_states[instance_id] = {
                 name: name, instance_key: instance_key, instance_cfg: instance_cfg,
                 callable: callable, probe_coordinator: probe_coordinator,
-                publisher_token: pub_token, sequence: 0, offerings: offerings, evidence_now: now
+                publisher_token: pub_token, sequence: 0, offerings: offerings, evidence_now: now,
+                physical_id: physical_id
               }
               sync_instance_health(name: name, instance_key: instance_key, offerings: offerings)
             end
 
-            def activate_or_fail_instance(instance_id:, pub_token:, probe_token:, instance_cfg:, offerings:)
+            def activate_or_fail_instance(instance_id:, pub_token:, probe_token:, instance_cfg:, offerings:,
+                                          physical_id:)
               readiness = check_health(instance_cfg: instance_cfg)
               if readiness.ready?
                 publisher.activate_instance_snapshot(instance_id: instance_id, publisher_token: pub_token,
-                                                     offerings: offerings, sequence: 0, probe_token: probe_token)
+                                                     offerings: offerings, sequence: 0, probe_token: probe_token,
+                                                     physical_id: physical_id)
               else
                 publisher.readiness_failed(instance_id: instance_id, probe_token: probe_token,
-                                           reason: readiness.reason)
+                                           reason: readiness.reason, physical_id: physical_id)
               end
             end
           end

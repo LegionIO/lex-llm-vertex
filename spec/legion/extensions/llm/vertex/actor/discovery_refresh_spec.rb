@@ -16,15 +16,17 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       .and_return(config)
   end
 
-  def instance_id_for(instance_cfg)
+  # Secondary physical identity (dedup/diagnostics) — NOT the instance
+  # identity. The identity is the operator's config name.
+  def physical_id_for(instance_cfg)
     Legion::Extensions::Llm::CredentialSources.credential_fingerprint(
       instance_cfg[:access_token] || instance_cfg[:credentials]
     ).then { |fp| "#{instance_cfg[:project]}:#{instance_cfg[:location]}/#{fp}" }
   end
 
-  def key_for(instance_cfg)
+  def key_for(name, instance_cfg)
     Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-      provider_family: :vertex, instance_id: instance_id_for(instance_cfg)
+      provider_family: :vertex, instance_id: name.to_s, physical_id: physical_id_for(instance_cfg)
     )
   end
 
@@ -54,9 +56,13 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       stub_health(ready_readiness)
       actor.manual
 
-      key = key_for(instance_cfg)
+      key = key_for(:prod, instance_cfg)
       record = registry.snapshot.instance(instance_key: key)
       expect(record).not_to be_nil
+      # Identity is the operator's config name; the derived
+      # project:location/fingerprint rides along as the secondary physical_id.
+      expect(record.instance_key.instance_id).to eq('prod')
+      expect(record.instance_key.physical_id).to eq(physical_id_for(instance_cfg))
       expect(record.availability.state).to eq(:available)
       expect(record.availability.source).to eq(:startup_readiness)
 
@@ -74,7 +80,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       stub_health(failed_readiness)
       actor.manual
 
-      key = key_for(instance_cfg)
+      key = key_for(:prod, instance_cfg)
       expect(registry.snapshot.instance(instance_key: key)).to be_nil
       expect(registry.snapshot.publication_status(instance_key: key).state).to eq(:initializing)
 
@@ -99,7 +105,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       stub_health(ready_readiness)
       actor.manual
 
-      key = key_for({ project: 'top-proj', location: 'us-central1', access_token: 'tok-top' })
+      key = key_for(:settings, { project: 'top-proj', location: 'us-central1', access_token: 'tok-top' })
       expect(registry.snapshot.instance(instance_key: key).availability.state).to eq(:available)
       expect(actor.settings[:instances][:settings][:health]).to include(available: true, circuit_state: :closed)
     end
@@ -113,7 +119,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       allow(actor).to receive(:check_health).and_return(failed_readiness, ready_readiness)
       actor.manual
 
-      key = key_for(instance_cfg)
+      key = key_for(:prod, instance_cfg)
       expect(registry.snapshot.publication_status(instance_key: key).state).to eq(:initializing)
 
       actor.manual # tick: cadence probe passes -> re-activation
@@ -130,7 +136,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       actor.manual
       actor.manual
 
-      key = key_for(instance_cfg)
+      key = key_for(:prod, instance_cfg)
       expect(registry.snapshot.instance(instance_key: key)).to be_nil
       expect(registry.snapshot.publication_status(instance_key: key).state).to eq(:initializing)
     end
@@ -145,13 +151,13 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       stub_health(ready_readiness)
       actor.manual
 
-      prod_key = key_for(instance_cfg)
+      prod_key = key_for(:prod, instance_cfg)
       expect(registry.snapshot.instance(instance_key: prod_key)).not_to be_nil
 
       configure_vertex(instances: { prod: instance_cfg, staging: staging_cfg })
       actor.manual
 
-      staging_key = key_for(staging_cfg)
+      staging_key = key_for(:staging, staging_cfg)
       expect(registry.snapshot.instance(instance_key: staging_key).availability.state).to eq(:available)
       expect(actor.settings[:instances][:staging][:health]).to include(available: true)
 
@@ -171,7 +177,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
       stub_health(ready_readiness)
       actor.manual
 
-      key = key_for(instance_cfg)
+      key = key_for(:prod, instance_cfg)
       sequence = registry.snapshot.instance(instance_key: key).published_sequence
 
       actor.manual

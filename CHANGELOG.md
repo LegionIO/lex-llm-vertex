@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.2] - 2026-08-17
+
+### Changed
+- **SSOT v3 fail-forward identity** — Instance identity is now the operator's CONFIG NAME
+  (the key the router's `instances.<name>` settings lookups use); the derived
+  `{project}:{location}/{credential_fingerprint}` moves to the secondary `InstanceKey`
+  `physical_id` field (dedup/diagnostics only). Two config names pointing at the same
+  physical endpoint stay distinct instances. `DiscoveryRefreshConfigHelpers#derive_instance_id`
+  becomes `derive_physical_id`; all `Inventory::Publisher` calls carry the `physical_id:`
+  secondary field. Requires `lex-llm >= 0.7.1` (InstanceKey `physical_id` field).
+- **Embedding models publish `chat: :unsupported`** — embedding offerings from the
+  STATIC_MODELS catalog publish `embed` as `:supported` and `chat`/`stream_chat`/
+  `count_tokens` as `:unsupported`, so a chat request can never be routed to an
+  embedding-only model; chat models publish `chat`/`stream_chat` `:supported`
+  (`count_tokens` gated on generate-content support).
+- `lex-llm` dependency floor bumped to `>= 0.7.1` (InstanceKey `physical_id` field).
+- Conformance/actor specs updated to the name-based identity with the secondary
+  physical-id field; the conformance harness fixture is now a name-keyed instance map.
+
 ## [0.3.1] - 2026-08-13
 
 ### Changed
