@@ -2,7 +2,7 @@
 
 require 'spec_helper'
 
-RSpec.describe Legion::Extensions::Llm::Vertex::Provider do # rubocop:disable RSpec/SpecFilePathFormat
+RSpec.describe Legion::Extensions::Llm::Vertex::Provider do
   let(:provider) { described_class.new(Legion::Extensions::Llm.config) }
   let(:base_config) { { project: 'test-project', access_token: 'test-token' } }
 

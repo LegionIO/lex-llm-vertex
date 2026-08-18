@@ -3,7 +3,8 @@
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/vertex/provider'
 require 'legion/extensions/llm/vertex/version'
-require_relative 'vertex/actors/discovery_refresh'
+require 'legion/extensions/llm/vertex/callable'
+require 'legion/extensions/llm/vertex/actors/discovery_refresh'
 
 module Legion
   module Extensions
@@ -11,7 +12,6 @@ module Legion
       # Google Cloud Vertex AI provider extension namespace.
       module Vertex
         extend Legion::Logging::Helper
-        extend ::Legion::Extensions::Core if ::Legion::Extensions.const_defined?(:Core, false)
         extend Legion::Extensions::Llm::AutoRegistration
 
         PROVIDER_FAMILY = :vertex
