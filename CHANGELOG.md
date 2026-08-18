@@ -18,6 +18,10 @@
 - `lex-llm` dependency floor bumped to `>= 0.7.1` (InstanceKey `physical_id` field).
 - Conformance/actor specs updated to the name-based identity with the secondary
   physical-id field; the conformance harness fixture is now a name-keyed instance map.
+- **Single actor registration** — the provider module no longer extends `Core` at
+  file level, so the boot-time submodule walk's `autobuild` gate skips it and the
+  gem's own top-level extension load is the sole actor registration (eliminates the
+  double-claim / FencedPublisherError from the daemon's dual boot-time build).
 
 ## [0.3.1] - 2026-08-13
 

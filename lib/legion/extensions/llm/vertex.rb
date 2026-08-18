@@ -12,7 +12,6 @@ module Legion
       # Google Cloud Vertex AI provider extension namespace.
       module Vertex
         extend Legion::Logging::Helper
-        extend ::Legion::Extensions::Core if ::Legion::Extensions.const_defined?(:Core, false)
         extend Legion::Extensions::Llm::AutoRegistration
 
         PROVIDER_FAMILY = :vertex
