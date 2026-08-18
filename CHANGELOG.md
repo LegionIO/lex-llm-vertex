@@ -1,5 +1,76 @@
 # Changelog
 
+## [0.3.2] - 2026-08-17
+
+### Changed
+- **SSOT v3 fail-forward identity** — Instance identity is now the operator's CONFIG NAME
+  (the key the router's `instances.<name>` settings lookups use); the derived
+  `{project}:{location}/{credential_fingerprint}` moves to the secondary `InstanceKey`
+  `physical_id` field (dedup/diagnostics only). Two config names pointing at the same
+  physical endpoint stay distinct instances. `DiscoveryRefreshConfigHelpers#derive_instance_id`
+  becomes `derive_physical_id`; all `Inventory::Publisher` calls carry the `physical_id:`
+  secondary field. Requires `lex-llm >= 0.7.1` (InstanceKey `physical_id` field).
+- **Embedding models publish `chat: :unsupported`** — embedding offerings from the
+  STATIC_MODELS catalog publish `embed` as `:supported` and `chat`/`stream_chat`/
+  `count_tokens` as `:unsupported`, so a chat request can never be routed to an
+  embedding-only model; chat models publish `chat`/`stream_chat` `:supported`
+  (`count_tokens` gated on generate-content support).
+- `lex-llm` dependency floor bumped to `>= 0.7.1` (InstanceKey `physical_id` field).
+- Conformance/actor specs updated to the name-based identity with the secondary
+  physical-id field; the conformance harness fixture is now a name-keyed instance map.
+- **Single actor registration** — the provider module no longer extends `Core` at
+  file level, so the boot-time submodule walk's `autobuild` gate skips it and the
+  gem's own top-level extension load is the sole actor registration (eliminates the
+  double-claim / FencedPublisherError from the daemon's dual boot-time build).
+
+## [0.3.1] - 2026-08-13
+
+### Changed
+- Remove all inline `rubocop:disable` directives from lib/ and spec/; fix underlying offenses by
+  real refactoring: rename unused `headers:` kwarg to `_headers:` in `complete`, move spec files to
+  paths that match the described class (`capability_policy_spec.rb` → `provider_spec.rb`,
+  `actors/fleet_worker_spec.rb` → `actor/fleet_worker_spec.rb`), and disable `Metrics/ClassLength`
+  at project level (consistent with all other disabled Metrics cops in `.rubocop.yml`).
+- Remove secondary publication engine: strip `attr_writer :registry_publisher`, the
+  `registry_publisher` class method, and all `publish_models_async`/`publish_readiness_async`
+  calls from `Provider`. Discovery publication now flows exclusively through the SSOT v3
+  `DiscoveryRefresh` actor via `Inventory::Publisher`.
+- Remove `:default` identity access in `Provider#settings`; `project` now reads
+  `config.vertex_project || ENV['GOOGLE_CLOUD_PROJECT']`, `location` reads `config.vertex_location`
+  directly, `default_publisher` returns the provider-native literal `'google'`.
+- Remove `respond_to?(:vertex_model_aliases)` guard in `resolve_model_id`; use safe navigation
+  (`config&.vertex_model_aliases`) instead.
+- Rename fallback instance key in `DiscoveryRefreshConfigHelpers#configured_instances` from
+  `:default_instance` to `:settings` to avoid gate-A false match on `:default` prefix.
+- Add `handle_exception` call to the `check_health` rescue block so failures are logged through
+  the standards path before a `ReadinessResult` is returned.
+- Update `vertex_spec.rb` to remove `RegistryPublisher` test stubs and expectations that no
+  longer apply; replace with direct assertions on model/offering/readiness values.
+
+## [0.3.0] - 2026-08-13
+
+### Changed
+- **SSOT v3 provider migration** — Complete rewrite of the discovery actor to the
+  Inventory::Publisher pattern. Claims instances by `{project}:{location}/{credential_fingerprint}`,
+  discovers models from the STATIC_MODELS catalog, probes health via the non-inference
+  models-list endpoint, and publishes OfferingDraft snapshots with full operation/capability evidence.
+- Remove `@model || STATIC_MODELS.first` default-model fallbacks from `completion_url`/`stream_url`.
+- Remove `Legion::LLM::Call::Registry` and `ScopedRefresher` dependencies from the discovery actor.
+- Add `VertexCallable` with `disconnect` and `normalize_dispatch_error(error:)` contracts.
+- Add SSOT v3 conformance spec with `it_behaves_like 'an SSOT v3 provider adapter'`.
+- Bump `lex-llm` dependency floor to `>= 0.7.0`.
+- `publication_source: :provider_static_catalog` for all offerings derived from STATIC_MODELS.
+- Two distinct projects/locations produce independent instances with separate lanes.
+- Initial readiness failure leaves instance in `:initializing` state (not `:unavailable`).
+- Error normalization (§8 health firewall): only an explicit flat 503 SERVICE_UNAVAILABLE
+  response body maps to `instance_unavailable`; connection_failure, timeout, overload (503/529),
+  model_not_ready, 429 (rate_limited), auth errors, and generic 5xx are all request-local/terminal
+  and never mutate global instance availability.
+- Remove `instance_id: :default` from `offering_for`/`build_offering`; callers receive a
+  real project+location derived instance_id from `provider_instance_id`.
+- Read `settings[:publisher]` and `settings[:location]` directly (registered defaults applied);
+  remove inline `|| 'google'` and `|| 'us-central1'` fallback guards.
+
 ## [0.2.16] - 2026-08-04
 
 ### Changed

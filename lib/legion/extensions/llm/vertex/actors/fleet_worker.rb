@@ -11,6 +11,7 @@ unless defined?(Legion::Extensions::Actors::Subscription)
 end
 
 require 'legion/extensions/llm/vertex'
+require 'legion/extensions/llm/vertex/runners/fleet_worker'
 require 'legion/extensions/llm/fleet/provider_responder'
 
 module Legion
@@ -19,9 +20,14 @@ module Legion
       module Vertex
         module Actor
           # Subscription actor for Vertex fleet request consumption.
+          #
+          # runner_class MUST be the constant (not a String): the Subscription
+          # dispatch path calls runner_class.send(runner_function, **message)
+          # directly when use_runner? is false, and a String cannot be send-ed.
+          # The runner entrypoint is kwargs-only to match that call.
           class FleetWorker < Legion::Extensions::Actors::Subscription
             def runner_class
-              'Legion::Extensions::Llm::Vertex::Runners::FleetWorker'
+              Legion::Extensions::Llm::Vertex::Runners::FleetWorker
             end
 
             def runner_function
