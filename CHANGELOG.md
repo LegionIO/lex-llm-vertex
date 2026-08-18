@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.3] - 2026-08-18
+
+### Fixed
+- Update SSOT v3 conformance coverage: `default` is a valid operator configuration
+  name for an instance, rather than a reserved identity.
+
 ## [0.3.2] - 2026-08-17
 
 ### Changed

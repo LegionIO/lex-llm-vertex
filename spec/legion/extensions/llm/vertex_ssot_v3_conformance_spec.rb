@@ -652,12 +652,13 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
   # --- No default model/provider ----------------------------------------------
 
   describe 'no default model or provider' do
-    it 'rejects instance_id "default" as reserved' do
-      expect do
-        Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-          provider_family: :vertex, instance_id: 'default'
-        )
-      end.to raise_error(Legion::Extensions::Llm::Inventory::Errors::ValidationError)
+    it 'permits instance_id "default" as an operator configuration name' do
+      instance_key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+        provider_family: :vertex, instance_id: 'default'
+      )
+
+      expect(instance_key.provider_family).to eq(:vertex)
+      expect(instance_key.instance_id).to eq('default')
     end
 
     it 'rejects nil instance_id' do
