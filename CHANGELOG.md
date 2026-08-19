@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.5] - 2026-08-19
+
+### Changed
+- Enforce the canonical dispatch boundary end to end: the callable's chat, stream_chat, and count_tokens operations now call `Provider#enforce_canonical_messages!` before dispatch, and the provider's render seam (`chat_payload` / `format_messages`) rejects anything that is not a `Canonical::Message` (pipeline dispatch) or a provider-native `Message` (Chat facade) with a loud ArgumentError. The 2026-08-19 incident — executor Hash messages crossing the dispatch boundary and half-rendering instead of failing — can no longer be masked.
+- Raise the `lex-llm` dependency floor to 0.7.7 for `Provider#enforce_canonical_messages!`.
+- Add a local-tree `lex-llm` path dependency to the test group so the adjacent checkout resolves against unreleased 0.7.7 during development. The Vertex wire payload (contents/parts shape) is unchanged for both accepted input shapes.
+
+### Added
+- Loud-reject regression coverage: plain-Hash requests raise at both the callable dispatch boundary (chat, stream_chat, count_tokens) and the provider render seam, and the raw-string model dispatch examples now feed canonical messages through the real render path.
+
 ## [0.3.4] - 2026-08-19
 
 ### Changed

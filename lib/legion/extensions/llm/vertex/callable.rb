@@ -38,10 +38,15 @@ module Legion
             # --- Fleet dispatch operations (Fleet::WorkerExecution contract) --
 
             def chat(messages:, model:, **rest)
+              # Canonical boundary (N x N law): pipeline dispatch delivers
+              # Canonical::Message objects only. Hash/legacy shapes are the
+              # bypass class — reject loudly, never coerce.
+              provider.enforce_canonical_messages!(messages)
               provider.chat(messages: messages, model: model, **rest)
             end
 
             def stream_chat(messages:, model:, **rest, &)
+              provider.enforce_canonical_messages!(messages)
               provider.stream_chat(messages: messages, model: model, **rest, &)
             end
 
@@ -50,6 +55,7 @@ module Legion
             end
 
             def count_tokens(messages:, model:, **rest)
+              provider.enforce_canonical_messages!(messages)
               provider.count_tokens(messages: messages, model: model, **rest)
             end
 

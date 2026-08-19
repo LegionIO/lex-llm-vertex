@@ -534,7 +534,10 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     # dispatch stubs — to keep that guarantee covered.
     describe 'raw-string model dispatch (D15)' do
       let(:fake_connection) { VertexSsotFakeConnection.new }
-      let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
+      # Pipeline dispatch (fleet WorkerExecution / SelectionDispatch) delivers
+      # Canonical::Message objects across the callable boundary; these examples
+      # drive the real render path, so the input must be the canonical shape.
+      let(:message) { Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello') }
 
       before { callable.provider.instance_variable_set(:@connection, fake_connection) }
 
@@ -589,6 +592,42 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-2.5-flash:countTokens'
         )
         expect(result).to include(input_tokens: 7)
+      end
+    end
+
+    # ─── Canonical dispatch boundary regression (2026-08-19 incident) ────────
+    # SSOT v3 local dispatch passed executor Hash messages straight to provider
+    # callables; lenient provider-side re-canonicalization masked the bypass.
+    # The callable now enforces Canonical-only (N x N law) and the provider
+    # render seam accepts only Canonical::Message (pipeline dispatch) or
+    # provider-native Message (Chat facade) — plain Hashes are rejected loudly.
+    describe 'canonical dispatch boundary' do
+      let(:hash_request) do
+        [
+          { role: 'user', content: 'What is the capital of France?' },
+          { role: 'assistant', content: 'Paris.' }
+        ]
+      end
+
+      it 'rejects plain Hash messages at the callable dispatch boundary' do
+        expect { callable.chat(messages: hash_request, model: 'gemini-2.5-flash') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+        expect { callable.stream_chat(messages: hash_request, model: 'gemini-2.5-flash') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+        expect { callable.count_tokens(messages: hash_request, model: 'gemini-2.5-flash') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+
+      it 'rejects plain Hash messages at the provider render seam' do
+        expect { callable.provider.send(:format_messages, hash_request) }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+
+      it 'still renders provider-native Message objects at the seam (Chat facade path)' do
+        native = [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')]
+
+        expect(callable.provider.send(:format_messages, native))
+          .to eq([{ role: 'user', parts: [{ text: 'hello' }] }])
       end
     end
 

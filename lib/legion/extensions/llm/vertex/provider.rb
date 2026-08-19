@@ -405,7 +405,24 @@ module Legion
             stream ? stream_generate_content_url(model:) : generate_content_url(model:)
           end
 
+          # Canonical boundary (N x N law): pipeline dispatch delivers
+          # Canonical::Message objects; the provider-native Chat facade
+          # delivers lex-llm Message objects. Both are object shapes this
+          # provider renders to the Vertex wire. Plain Hashes are the bypass
+          # class (the 2026-08-19 incident) — reject loudly, never coerce.
+          def enforce_message_boundary!(messages)
+            messages.each do |message|
+              next if message.is_a?(Legion::Extensions::Llm::Canonical::Message)
+              next if message.is_a?(Legion::Extensions::Llm::Message)
+
+              raise ArgumentError,
+                    "vertex provider input must be Canonical::Message objects, got #{message.class} — " \
+                    'non-canonical message shapes must not cross the dispatch boundary'
+            end
+          end
+
           def chat_payload(messages, model:, temperature:, max_tokens:, tools:, tool_prefs:, stream:)
+            enforce_message_boundary!(messages)
             if generate_content_model?(model)
               generate_content_payload(messages, temperature:, max_tokens:, tools:, tool_prefs:)
             else
@@ -467,7 +484,12 @@ module Legion
             { parts: parts }
           end
 
+          # Render seam: the N x N boundary where messages become the Vertex
+          # contents/parts wire. Only Canonical::Message (pipeline dispatch)
+          # and provider-native Message (Chat facade) cross it — anything
+          # else, especially plain Hashes, is rejected loudly.
           def format_messages(messages)
+            enforce_message_boundary!(messages)
             messages.map { |message| { role: vertex_role(message.role), parts: message_parts(message) } }
           end
 
