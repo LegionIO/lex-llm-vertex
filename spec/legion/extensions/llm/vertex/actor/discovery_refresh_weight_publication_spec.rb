@@ -249,6 +249,33 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
   end
 
   describe 'two-phase initial publication' do
+    it 'does not claim malformed startup weights and recovers once on the next valid tick' do
+      provider_settings[:weight] = false
+      configure_alpha
+      stub_health
+      publisher = actor.send(:publisher)
+      callable_class = Legion::Extensions::Llm::Vertex::Actor::VertexCallable
+      allow(publisher).to receive(:claim_instance).and_call_original
+      allow(callable_class).to receive(:new).and_call_original
+
+      actor.manual
+
+      expect(registry.snapshot.publication_status(instance_key: alpha_key)).to be_nil
+      expect(registry.snapshot.instance(instance_key: alpha_key)).to be_nil
+      expect(actor.instance_variable_get(:@instance_states)).to be_empty
+      expect(publisher).not_to have_received(:claim_instance)
+      expect(callable_class).not_to have_received(:new)
+
+      provider_settings[:weight] = 120
+      actor.manual
+
+      expect(publisher).to have_received(:claim_instance).once
+      expect(callable_class).to have_received(:new).once
+      expect(registry.snapshot.publication_status(instance_key: alpha_key).state).to eq(:complete)
+      expect(registry.snapshot.instance(instance_key: alpha_key).availability.state).to eq(:available)
+      expect(actor.instance_variable_get(:@instance_states).keys).to eq(['alpha'])
+    end
+
     it 'rebuilds from current settings after a weight changes during readiness' do
       provider_settings[:weight] = 120
       configure_alpha

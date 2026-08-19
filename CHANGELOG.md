@@ -7,6 +7,9 @@
 - Track initializing publications through readiness, serialize replacement/removal state, and report dormant configured weights without adding a Settings callback or operator workflow.
 - Add callable-to-HTTP conformance coverage proving folded system messages render in Vertex's native `systemInstruction` field.
 
+### Fixed
+- Validate startup offering weights before creating a callable or claiming its inventory scope, so malformed settings leave no untracked initializing publication and the next valid cadence pass recovers without operator action.
+
 ## [0.3.3] - 2026-08-18
 
 ### Fixed

@@ -583,15 +583,15 @@ module Legion
               instance_key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
                 provider_family: :vertex, instance_id: instance_id, physical_id: physical_id
               )
+              now = Time.now.freeze
+              offerings = discover_offerings_for_instance(instance_cfg: instance_cfg,
+                                                          instance_key: instance_key, now: now)
               callable = VertexCallable.new(instance_cfg: instance_cfg, logger: log)
               probe_coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
                 instance_key: instance_key, enqueue: build_probe_enqueue(instance_id: instance_id)
               )
               pub_token = publisher.claim_instance(instance_id: instance_id, callable: callable,
                                                    probe_request_handle: probe_coordinator, physical_id: physical_id)
-              now = Time.now.freeze
-              offerings = discover_offerings_for_instance(instance_cfg: instance_cfg,
-                                                          instance_key: instance_key, now: now)
               state = {
                 name: name,
                 instance_key: instance_key,
