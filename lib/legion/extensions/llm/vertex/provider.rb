@@ -480,8 +480,11 @@ module Legion
           end
 
           def message_parts(message)
-            return tool_call_parts(message) if message.tool_call?
-            return tool_result_parts(message) if message.tool_result?
+            tool_calls = message.tool_calls
+            return tool_call_parts(message) if tool_calls && !tool_calls.empty?
+
+            tool_call_id = message.tool_call_id
+            return tool_result_parts(message) if tool_call_id && !tool_call_id.empty?
 
             content_parts(message.content)
           end

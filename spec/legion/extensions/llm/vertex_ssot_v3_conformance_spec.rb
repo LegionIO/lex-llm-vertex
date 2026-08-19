@@ -548,6 +548,20 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         expect(result.content).to eq('done')
       end
 
+      it 'renders a folded leading system message into the native systemInstruction field' do
+        system_message = Legion::Extensions::Llm::Canonical::Message.build(
+          role: :system,
+          content: 'authoritative system instruction'
+        )
+        user_message = Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')
+
+        callable.chat(messages: [system_message, user_message], model: 'gemini-2.5-flash')
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:systemInstruction]).to eq(parts: [{ text: 'authoritative system instruction' }])
+        expect(payload[:contents]).to eq([{ role: 'user', parts: [{ text: 'hello' }] }])
+      end
+
       it 'stream_chats through the real render path with a raw-string model' do
         result = callable.stream_chat(messages: [message], model: 'gemini-2.5-flash')
 

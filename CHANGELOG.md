@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.4] - 2026-08-19
+
+### Changed
+- Publish the validated four-axis lane-weight pair from every Vertex offering draft and reconcile weight-only changes atomically on the existing discovery cadence.
+- Track initializing publications through readiness, serialize replacement/removal state, and report dormant configured weights without adding a Settings callback or operator workflow.
+- Add callable-to-HTTP conformance coverage proving folded system messages render in Vertex's native `systemInstruction` field.
+
+### Fixed
+- Validate startup offering weights before creating a callable or claiming its inventory scope, so malformed settings leave no untracked initializing publication and the next valid cadence pass recovers without operator action.
+- Pin the raw-`Data` comparison exception with real-cadence regressions: frozen static catalog order and the per-instance evidence timestamp keep unchanged passes stable, while every authoritative draft member and duplicate-count change remains significant.
+
 ## [0.3.3] - 2026-08-18
 
 ### Fixed
