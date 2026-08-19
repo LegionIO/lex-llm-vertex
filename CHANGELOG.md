@@ -9,6 +9,7 @@
 
 ### Fixed
 - Validate startup offering weights before creating a callable or claiming its inventory scope, so malformed settings leave no untracked initializing publication and the next valid cadence pass recovers without operator action.
+- Pin the raw-`Data` comparison exception with real-cadence regressions: frozen static catalog order and the per-instance evidence timestamp keep unchanged passes stable, while every authoritative draft member and duplicate-count change remains significant.
 
 ## [0.3.3] - 2026-08-18
 

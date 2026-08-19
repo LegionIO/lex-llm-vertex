@@ -80,6 +80,34 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
     )
   end
 
+  def authoritative_draft_variant(draft, field)
+    case field
+    when :provider_native_key
+      draft.with(provider_native_key: 'vertex-native-revision-v2')
+    when :model
+      draft.with(model: 'vertex-model-revision-v2')
+    when :tier
+      draft.with(tier: :frontier)
+    when :operation_evidence
+      evidence = draft.operation_evidence.fetch(:chat).with(metadata: { revision: 'v2' })
+      draft.with(operation_evidence: draft.operation_evidence.merge(chat: evidence))
+    when :capability_evidence
+      capability, evidence = draft.capability_evidence.first
+      draft.with(capability_evidence: draft.capability_evidence.merge(
+        capability => evidence.with(metadata: { revision: 'v2' })
+      ))
+    when :context_evidence, :max_output_evidence, :embedding_dimensions_evidence,
+         :model_revision_evidence, :tokenizer_evidence
+      draft.with(field => draft.public_send(field).with(metadata: { revision: 'v2' }))
+    when :quota_domains
+      draft.with(quota_domains: { chat: 'vertex-chat-v2' })
+    when :metadata
+      draft.with(metadata: draft.metadata.merge(catalog_revision: 'v2'))
+    when :publication_source
+      draft.with(publication_source: :provider_control_plane)
+    end
+  end
+
   describe 'write-time weights on the ordinary discovery cadence' do
     it 'stores the exact four-axis pair and product on each constructed draft' do
       provider_settings[:weight] = 120
@@ -158,6 +186,77 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
 
       expect(registry.snapshot.publication_status(instance_key: alpha_key).published_sequence).to eq(0)
       expect(alpha_state[:sequence]).to eq(0)
+    end
+
+    it 'constructs the frozen static catalog in deterministic declaration order without cadence churn' do
+      configure_alpha
+      stub_health
+      publisher = actor.send(:publisher)
+      allow(publisher).to receive(:replace_instance_snapshot).and_call_original
+
+      actor.manual
+      expected_order = Legion::Extensions::Llm::Vertex::Provider::STATIC_MODELS.filter_map do |entry|
+        entry[:model] unless entry[:model].to_s.empty?
+      end
+      expect(alpha_state.fetch(:offerings).map(&:provider_native_key)).to eq(expected_order)
+
+      actor.manual
+
+      expect(publisher).not_to have_received(:replace_instance_snapshot)
+      expect(alpha_state[:sequence]).to eq(0)
+    end
+
+    it 'covers every OfferingDraft member through field or validated weight-pair cadence cases' do
+      covered_fields = %i[
+        provider_native_key model tier operation_evidence capability_evidence context_evidence
+        max_output_evidence embedding_dimensions_evidence model_revision_evidence tokenizer_evidence
+        quota_domains metadata publication_source weight_inputs base_weight
+      ]
+      expect(Legion::Extensions::Llm::Inventory::OfferingDraft.members).to match_array(covered_fields)
+    end
+
+    %i[
+      provider_native_key model tier operation_evidence capability_evidence context_evidence
+      max_output_evidence embedding_dimensions_evidence model_revision_evidence tokenizer_evidence
+      quota_domains metadata publication_source
+    ].each do |field|
+      it "publishes exactly once when the authoritative #{field} contract changes" do
+        configure_alpha
+        stub_health
+        actor.manual
+        previous = alpha_state.fetch(:offerings)
+        changed = previous.dup
+        changed[0] = authoritative_draft_variant(previous.first, field)
+        allow(actor).to receive(:discover_offerings_for_instance).and_return(changed)
+        publisher = actor.send(:publisher)
+        allow(publisher).to receive(:replace_instance_snapshot).and_call_original
+
+        actor.manual
+
+        expect(previous).not_to eq(changed)
+        expect(publisher).to have_received(:replace_instance_snapshot).once
+        expect(registry.snapshot.publication_status(instance_key: alpha_key).published_sequence).to eq(1)
+        expect(alpha_state[:sequence]).to eq(1)
+      end
+    end
+
+    it 'treats duplicate multiplicity as unequal and significant on the ordinary cadence' do
+      configure_alpha
+      stub_health
+      actor.manual
+      previous = alpha_state.fetch(:offerings)
+      duplicated = previous + [previous.first]
+      allow(actor).to receive(:discover_offerings_for_instance).and_return(duplicated)
+      publisher = actor.send(:publisher)
+      replacements = []
+      allow(publisher).to receive(:replace_instance_snapshot) { |**kwargs| replacements << kwargs }
+
+      actor.manual
+
+      expect(previous).not_to eq(duplicated)
+      expect(replacements.length).to eq(1)
+      expect(replacements.first.fetch(:offerings).length).to eq(previous.length + 1)
+      expect(alpha_state[:sequence]).to eq(1)
     end
 
     it 'logs each dormant model once, clears it on appearance, and logs its re-disappearance' do
