@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4] - 2026-08-19
+
+### Changed
+- Publish the validated four-axis lane-weight pair from every Vertex offering draft and reconcile weight-only changes atomically on the existing discovery cadence.
+- Track initializing publications through readiness, serialize replacement/removal state, and report dormant configured weights without adding a Settings callback or operator workflow.
+- Add callable-to-HTTP conformance coverage proving folded system messages render in Vertex's native `systemInstruction` field.
+
 ## [0.3.3] - 2026-08-18
 
 ### Fixed
