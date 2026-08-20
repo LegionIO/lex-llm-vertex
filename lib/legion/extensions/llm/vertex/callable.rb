@@ -15,7 +15,20 @@ module Legion
           # normalize_dispatch_error classifies them) and implements the
           # `disconnect` and `normalize_dispatch_error(error:)` contracts
           # required by Inventory::CallableHandle and Routing::ProviderOutcome.
+          # 0.8.0 callable contract: chat/stream_chat take the rehydrated
+          # message array positionally (WorkerExecution dispatch shape) and
+          # the Selection-derived model as a bare String; folded wire params
+          # become Canonical::Params at this boundary (05 O4).
           class VertexCallable
+            # Keys the base Provider exposes as named kwargs for the
+            # completion operations. Anything else the fleet passes (sampling
+            # scalars, `temperature` — a Canonical::Params member, 05 O4) is
+            # folded into Canonical::Params at the dispatch boundary.
+            COMPLETION_NAMED_KEYS = %i[tools schema thinking tool_prefs headers].freeze
+            # Named kwargs of Vertex's own embed dialect (task_type/title are
+            # Vertex wire spellings); anything else folds into params.
+            EMBED_NAMED_KEYS = %i[dimensions task_type title headers].freeze
+
             attr_reader :provider
 
             def initialize(instance_cfg:, logger:)
@@ -42,21 +55,25 @@ module Legion
               # Canonical::Message objects only. Hash/legacy shapes are the
               # bypass class — reject loudly, never coerce.
               provider.enforce_canonical_messages!(messages)
-              provider.chat(messages, model: model, **rest)
+              named, params = split_fleet_kwargs(rest, COMPLETION_NAMED_KEYS)
+              provider.chat(messages, model: model, params: canonical_params(params), **named)
             end
 
             def stream_chat(messages, model:, **rest, &)
               provider.enforce_canonical_messages!(messages)
-              provider.stream_chat(messages, model: model, **rest, &)
+              named, params = split_fleet_kwargs(rest, COMPLETION_NAMED_KEYS)
+              provider.stream_chat(messages, model: model, params: canonical_params(params), **named, &)
             end
 
             def embed(text:, model:, **rest)
-              provider.embed(text: text, model: model, **rest)
+              named, params = split_fleet_kwargs(rest, EMBED_NAMED_KEYS)
+              provider.embed(text: text, model: model, params: params, **named)
             end
 
             def count_tokens(messages:, model:, **rest)
               provider.enforce_canonical_messages!(messages)
-              provider.count_tokens(messages: messages, model: model, **rest)
+              _named, params = split_fleet_kwargs(rest, [])
+              provider.count_tokens(messages: messages, model: model, params: params)
             end
 
             # --- Error normalization ------------------------------------------
@@ -88,6 +105,26 @@ module Legion
             end
 
             private
+
+            # The 0.8.0 completion funnel receives canonical values only
+            # (08 F3): the folded wire params become a Canonical::Params at
+            # the dispatch boundary — temperature is a params member (05 O4),
+            # never a kwarg. A canonical Params already in flight round-trips
+            # through from_hash Data-equal (kit T3/T7); unknown keys fold into
+            # params metadata (04 L5), never dropped or raised.
+            def canonical_params(params)
+              Legion::Extensions::Llm::Canonical::Params.from_hash(params)
+            end
+
+            # Split the fleet's **rest into the provider's named kwargs and a
+            # payload params hash (any passed :params merged with the unknown
+            # keys — sampling scalars, temperature, 0.7.x spellings).
+            def split_fleet_kwargs(rest, named_keys)
+              named = rest.slice(*named_keys)
+              extra = rest.reject { |key, _| named.key?(key) }
+              params = (extra.delete(:params) || {}).to_h.merge(extra)
+              [named, params]
+            end
 
             def classify_client_error(error:)
               case error.response_status

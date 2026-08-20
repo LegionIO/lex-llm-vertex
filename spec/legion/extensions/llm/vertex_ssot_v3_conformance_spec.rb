@@ -612,6 +612,42 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         )
         expect(result).to eq(7)
       end
+
+      # 05 O4 boundary regression: folded fleet wire params (top-level
+      # sampling scalars, a raw params hash — 0.7.x spellings) become a
+      # Canonical::Params at the callable before the 0.8.0 renderer reads
+      # params.temperature / params.max_tokens.
+      it 'folds top-level wire sampling scalars into Canonical::Params at the callable boundary' do
+        callable.chat([message], model: 'gemini-2.5-flash', temperature: 0.7, max_tokens: 64)
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.7, maxOutputTokens: 64)
+      end
+
+      it 'folds a raw wire params hash into Canonical::Params at the callable boundary' do
+        callable.chat([message], model: 'gemini-2.5-flash', params: { temperature: 0.4, max_tokens: 32 })
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.4, maxOutputTokens: 32)
+      end
+
+      it 'keeps an explicit canonical params object canonical through the boundary' do
+        params = Legion::Extensions::Llm::Canonical::Params.build(temperature: 0.3)
+
+        callable.chat([message], model: 'gemini-2.5-flash', params: params)
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.3)
+      end
+
+      it 'folds wire scalars for stream_chat through the same boundary' do
+        # rubocop:disable Lint/EmptyBlock -- the block selects the stream path
+        callable.stream_chat([message], model: 'gemini-2.5-flash', temperature: 0.5) { |_chunk| }
+        # rubocop:enable Lint/EmptyBlock
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.5)
+      end
     end
 
     # ─── Canonical dispatch boundary regression (2026-08-19 incident) ────────
