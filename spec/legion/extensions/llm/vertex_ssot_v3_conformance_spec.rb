@@ -67,9 +67,14 @@ class VertexSsotFakeConnection
     when /:predict\z/ then { 'predictions' => [{ 'embeddings' => { 'values' => [0.1, 0.2] } }] }
     when /:countTokens\z/ then { 'totalTokens' => 7 }
     else
+      # modelVersion echoes the model in the request URL (the Vertex wire
+      # does) so the canonical response keeps the Selection-derived model
+      # end-to-end (B4).
       {
-        'modelVersion' => 'gemini-2.5-flash',
-        'candidates' => [{ 'content' => { 'parts' => [{ 'text' => 'done' }] } }],
+        'modelVersion' => url[%r{models/([^:]+):}, 1],
+        'candidates' => [
+          { 'content' => { 'parts' => [{ 'text' => 'done' }] }, 'finishReason' => 'STOP' }
+        ],
         'usageMetadata' => { 'promptTokenCount' => 1, 'candidatesTokenCount' => 2 }
       }
     end
@@ -254,9 +259,17 @@ class VertexSsotHarness
 
   def fake_dispatch_result(operation)
     case operation
-    when :embed then Legion::Extensions::Llm::Embedding.new(vectors: [0.1, 0.2, 0.3], model: 'conformance')
-    when :count_tokens then { input_tokens: 42, raw: {} }
-    else Legion::Extensions::Llm::Message.new(role: :assistant, content: 'conformance response')
+    when :embed
+      # 05 §3 documented artifact: { text:, model:, embedding:, usage: }
+      {
+        text: 'conformance', model: 'conformance', embedding: [0.1, 0.2, 0.3],
+        usage: Legion::Extensions::Llm::Canonical::Usage.build(input_tokens: 0)
+      }
+    when :count_tokens then 42
+    else
+      Legion::Extensions::Llm::Canonical::Response.build(
+        text: 'conformance response', model: 'conformance', stop_reason: :end_turn
+      )
     end
   end
 
@@ -542,13 +555,14 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       before { callable.provider.instance_variable_set(:@connection, fake_connection) }
 
       it 'chats through the real render path with a raw-string model' do
-        result = callable.chat(messages: [message], model: 'gemini-2.5-flash')
+        result = callable.chat([message], model: 'gemini-2.5-flash')
 
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent'
         )
-        expect(result).to be_a(Legion::Extensions::Llm::Message)
-        expect(result.content).to eq('done')
+        expect(result).to be_a(Legion::Extensions::Llm::Canonical::Response)
+        expect(result.text).to eq('done')
+        expect(result.model).to eq('gemini-2.5-flash')
       end
 
       it 'renders a folded leading system message into the native systemInstruction field' do
@@ -558,7 +572,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         )
         user_message = Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')
 
-        callable.chat(messages: [system_message, user_message], model: 'gemini-2.5-flash')
+        callable.chat([system_message, user_message], model: 'gemini-2.5-flash')
 
         payload = fake_connection.posts.first[1]
         expect(payload[:systemInstruction]).to eq(parts: [{ text: 'authoritative system instruction' }])
@@ -566,13 +580,17 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       end
 
       it 'stream_chats through the real render path with a raw-string model' do
-        result = callable.stream_chat(messages: [message], model: 'gemini-2.5-flash')
+        # The base funnel streams IFF a block is given (08 F1: stream_chat is a
+        # thin delegate; stream: block_given?).
+        # rubocop:disable Lint/EmptyBlock -- the block selects the stream path
+        result = callable.stream_chat([message], model: 'gemini-2.5-flash') { |_chunk| }
+        # rubocop:enable Lint/EmptyBlock
 
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/' \
           'gemini-2.5-flash:streamGenerateContent?alt=sse'
         )
-        expect(result).to be_a(Legion::Extensions::Llm::Message)
+        expect(result).to be_a(Legion::Extensions::Llm::Canonical::Response)
       end
 
       it 'embeds through the real render path with a raw-string model' do
@@ -581,8 +599,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-embedding-001:predict'
         )
-        expect(result).to be_a(Legion::Extensions::Llm::Embedding)
-        expect(result.vectors).to eq([0.1, 0.2])
+        expect(result[:embedding]).to eq([0.1, 0.2])
+        expect(result[:usage]).to be_a(Legion::Extensions::Llm::Canonical::Usage)
+        expect(result[:usage].input_tokens).to eq(0)
       end
 
       it 'counts tokens through the real render path with a raw-string model' do
@@ -591,16 +610,16 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-2.5-flash:countTokens'
         )
-        expect(result).to include(input_tokens: 7)
+        expect(result).to eq(7)
       end
     end
 
     # ─── Canonical dispatch boundary regression (2026-08-19 incident) ────────
     # SSOT v3 local dispatch passed executor Hash messages straight to provider
-    # callables; lenient provider-side re-canonicalization masked the bypass.
-    # The callable now enforces Canonical-only (N x N law) and the provider
-    # render seam accepts only Canonical::Message (pipeline dispatch) or
-    # provider-native Message (Chat facade) — plain Hashes are rejected loudly.
+    # callables; lenient provider-side tolerance masked the bypass. The
+    # callable enforces Canonical-only at its entry (the shared helper, N x N
+    # law) and the base funnel enforces centrally before rendering — plain
+    # Hashes are rejected loudly at both boundaries.
     describe 'canonical dispatch boundary' do
       let(:hash_request) do
         [
@@ -610,25 +629,37 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       end
 
       it 'rejects plain Hash messages at the callable dispatch boundary' do
-        expect { callable.chat(messages: hash_request, model: 'gemini-2.5-flash') }
+        expect { callable.chat(hash_request, model: 'gemini-2.5-flash') }
           .to raise_error(ArgumentError, /Canonical::Message/)
-        expect { callable.stream_chat(messages: hash_request, model: 'gemini-2.5-flash') }
+        expect { callable.stream_chat(hash_request, model: 'gemini-2.5-flash') }
           .to raise_error(ArgumentError, /Canonical::Message/)
         expect { callable.count_tokens(messages: hash_request, model: 'gemini-2.5-flash') }
           .to raise_error(ArgumentError, /Canonical::Message/)
       end
 
-      it 'rejects plain Hash messages at the provider render seam' do
-        expect { callable.provider.send(:format_messages, hash_request) }
+      it 'rejects plain Hash messages at the provider funnel (central enforcement, 08 F2)' do
+        expect { callable.provider.chat(hash_request, model: 'gemini-2.5-flash') }
           .to raise_error(ArgumentError, /Canonical::Message/)
       end
+    end
 
-      it 'still renders provider-native Message objects at the seam (Chat facade path)' do
-        native = [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')]
+    # ─── 0.8.0 canonical boundary kit (B1/B2 against the REAL callable) ──────
+    # The kit examples resolve `callable` from the host group — the shadowing
+    # let below points them at the production callable wired to the offline
+    # fake connection (the real render/parse paths, no network).
+    describe 'canonical boundary kit (08 F2 / 05 O5)' do
+      let(:fake_kit_connection) { VertexSsotFakeConnection.new }
 
-        expect(callable.provider.send(:format_messages, native))
-          .to eq([{ role: 'user', parts: [{ text: 'hello' }] }])
+      let(:callable) do
+        target = described_class.new(
+          instance_cfg: ssot_harness.instance_configs[0], logger: Logger.new(File::NULL)
+        )
+        target.provider.instance_variable_set(:@connection, fake_kit_connection)
+        target
       end
+
+      it_behaves_like 'B1 — central canonical enforcement (08 F2)'
+      it_behaves_like 'B2 — canonical outputs (05 O5, 08 R2)'
     end
 
     it 'returns a ProviderOutcome from normalize_dispatch_error' do

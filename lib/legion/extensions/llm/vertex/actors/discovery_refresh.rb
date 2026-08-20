@@ -14,7 +14,6 @@ require 'concurrent'
 require 'faraday'
 require 'legion/extensions/llm/vertex/callable'
 require 'legion/extensions/llm/inventory/publisher'
-require 'legion/extensions/llm/inventory/scoped_refresher'
 require 'legion/extensions/llm/inventory/identity'
 require 'legion/extensions/llm/inventory/records'
 require 'legion/extensions/llm/inventory/weight_reconciler'
@@ -457,12 +456,10 @@ module Legion
             private
 
             def publisher
-              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(
-                provider_family: :vertex,
-                compatibility_adapter: Legion::Extensions::Llm::Inventory::ScopedRefresher::LegacyCoordinatorAdapter.new(
-                  provider_family: :vertex
-                )
-              )
+              # 0.8.0: the mixed-version window is over — the legacy
+              # old-coordinator projection bridge is gone with the lex-llm
+              # cut; the Publisher is a direct Registry wrapper only.
+              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :vertex)
             end
 
             def initial_discovery

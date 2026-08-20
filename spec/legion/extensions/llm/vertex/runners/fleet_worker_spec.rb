@@ -12,7 +12,6 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Runners::FleetWorker do
   let(:responder) { Legion::Extensions::Llm::Fleet::ProviderResponder }
 
   it 'delegates the decoded subscription message to the shared lex-llm responder helper' do
-    allow(Legion::Extensions::Llm::Vertex).to receive(:discover_instances).and_return(instances)
     allow(responder).to receive(:call).and_return(:ok)
 
     result = described_class.handle_fleet_request(**message)
@@ -21,8 +20,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Runners::FleetWorker do
     expect(responder).to have_received(:call).with(
       payload: message,
       provider_family: :vertex,
-      provider_class: Legion::Extensions::Llm::Vertex::Provider,
-      provider_instances: satisfy { |resolver| resolver.call == instances }
+      registry: Legion::Extensions::Llm::Inventory::Registry
     )
   end
 end

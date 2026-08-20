@@ -186,13 +186,12 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh do
     end
   end
 
-  # --- Publisher wiring (D2) ------------------------------------------------------
+  # --- Publisher wiring (0.8.0 rip regression) ------------------------------------
 
   describe 'publisher wiring' do
-    it 'injects the LegacyCoordinatorAdapter into the Publisher' do
+    it 'constructs the Publisher as a direct Registry wrapper (no legacy coordinator adapter)' do
       publisher = actor.send(:publisher)
-      expect(publisher.instance_variable_get(:@compatibility_adapter))
-        .to be_a(Legion::Extensions::Llm::Inventory::ScopedRefresher::LegacyCoordinatorAdapter)
+      expect(publisher.instance_variable_get(:@compatibility_adapter)).to be_nil
     end
   end
 

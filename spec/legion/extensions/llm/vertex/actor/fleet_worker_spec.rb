@@ -39,19 +39,18 @@ RSpec.describe Legion::Extensions::Llm::Vertex::Actor::FleetWorker do
   end
 
   it 'dispatches a subscription message through the runner to the shared responder' do
-    allow(Legion::Extensions::Llm::Vertex).to receive(:discover_instances).and_return(instances_hash)
     allow(responder).to receive(:call).and_return(:ok)
 
     # The exact call Legion::Extensions::Actors::Subscription makes when
-    # use_runner? is false.
+    # use_runner? is false. Protocol v3: exact-only execution against the
+    # SSOT registry — no provider construction wiring.
     result = actor.runner_class.send(actor.runner_function, **message)
 
     expect(result).to eq(:ok)
     expect(responder).to have_received(:call).with(
       payload: message,
       provider_family: :vertex,
-      provider_class: Legion::Extensions::Llm::Vertex::Provider,
-      provider_instances: satisfy { |resolver| resolver.call == instances_hash }
+      registry: Legion::Extensions::Llm::Inventory::Registry
     )
   end
 

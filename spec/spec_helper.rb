@@ -49,16 +49,20 @@ Legion::Settings[:extensions] ||= {}
 
 require 'legion/extensions/llm/vertex'
 
-# Load the SSOT v3 shared conformance examples from the lex-llm gem's spec/
-# directory (spec/ ships in the gem but is NOT on the load path). Only the
-# shared examples file — the kit directory's own self-test specs belong to
-# lex-llm's suite, not this provider's.
+# Load the shared conformance examples from the lex-llm gem's spec/ directory
+# (spec/ ships in the gem but is NOT on the load path). Only the shared
+# examples files — the kit directory's own self-test specs belong to lex-llm's
+# suite, not this provider's:
+#   * ssot_provider_examples.rb — the SSOT v3 registry/fleet adapter group
+#   * ssot_contract_examples.rb — the 0.8.0 boundary (B), fleet (F), and
+#     registry (R) groups the conformance spec runs against the real callable
 if Gem.loaded_specs['lex-llm']
-  examples_path = File.join(
+  kit_dir = File.join(
     Gem.loaded_specs['lex-llm'].full_gem_path,
-    'spec/legion/extensions/llm/conformance/ssot_provider_examples.rb'
+    'spec/legion/extensions/llm/conformance'
   )
-  require examples_path
+  require File.join(kit_dir, 'ssot_provider_examples.rb')
+  require File.join(kit_dir, 'ssot_contract_examples.rb')
 end
 
 if defined?(Legion::Logging)

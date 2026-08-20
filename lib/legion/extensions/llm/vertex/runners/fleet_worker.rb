@@ -12,18 +12,20 @@ module Legion
           #
           # The Subscription dispatch path invokes this as
           # handle_fleet_request(**message) where message is the decoded
-          # protocol-v2 envelope plus AMQP metadata; the whole message is the
+          # protocol-v3 envelope plus AMQP metadata; the whole message is the
           # payload for the shared responder (which selects the envelope
           # fields it needs).
           module FleetWorker
             module_function
 
             def handle_fleet_request(**message)
+              # Protocol v3 (06): exact-only execution against the SSOT
+              # registry — the responder never constructs a provider; the
+              # callable is the captured registry handle.
               Legion::Extensions::Llm::Fleet::ProviderResponder.call(
                 payload: message,
                 provider_family: Vertex::PROVIDER_FAMILY,
-                provider_class: Vertex::Provider,
-                provider_instances: -> { Vertex.discover_instances }
+                registry: Legion::Extensions::Llm::Inventory::Registry
               )
             end
           end

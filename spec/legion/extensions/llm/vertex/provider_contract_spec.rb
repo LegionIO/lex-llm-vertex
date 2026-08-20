@@ -3,54 +3,33 @@
 require 'spec_helper'
 require 'legion/extensions/llm/vertex/provider'
 
+# 0.8.0 provider funnel contract (08 F1-F3): the base complete funnel is the
+# single completion path — Vertex must not re-implement it — and the
+# message-consuming operations take canonical keyword entries.
 RSpec.describe Legion::Extensions::Llm::Vertex::Provider do
-  it 'does not expose positional canonical provider arguments' do
-    canonical_methods.each { |method_name| expect_keyword_compatible(method_name) }
-  end
-
-  describe '#discover_offerings' do
-    let(:provider) do
-      described_class.new(
-        vertex_project: 'test-project',
-        vertex_location: 'us-central1',
-        vertex_access_token: 'test-token',
-        model_whitelist: [],
-        model_blacklist: []
-      )
-    end
-    let(:model) do
-      Legion::Extensions::Llm::Model::Info.new(
-        id: 'gemini-2.5-flash',
-        name: 'gemini-flash',
-        provider: :vertex,
-        family: 'gemini',
-        capabilities: %w[chat streaming vision tools],
-        metadata: { publisher: 'google', api: :generate_content }
-      )
-    end
-
-    before do
-      allow(provider).to receive(:health).with(live: true).and_return({ status: 'healthy', ready: true })
-      allow(provider).to receive(:list_models).with(live: true).and_return([model])
-    end
-
-    it 'treats empty whitelist and blacklist as allow-all and keeps provider health on offerings' do
-      offerings = provider.discover_offerings(live: true)
-      expected_model = 'projects/test-project/locations/us-central1/publishers/google/models/gemini-2.5-flash'
-
-      expect(offerings.map(&:model)).to eq([expected_model])
-      expect(offerings.first.health).to eq({ status: 'healthy', ready: true })
+  it 'does not override the base completion funnel (chat/stream_chat/complete)' do
+    %i[chat stream_chat complete].each do |method_name|
+      owner = described_class.instance_method(method_name).owner
+      expect(owner).to eq(Legion::Extensions::Llm::Provider),
+                       "#{method_name} must stay the base funnel (got #{owner})"
     end
   end
 
-  def canonical_methods = %i[chat stream_chat embed image list_models discover_offerings health count_tokens]
+  it 'takes canonical keyword entries for count_tokens and embed' do
+    count_params = described_class.instance_method(:count_tokens).parameters
+    expect(count_params).to include(%i[keyreq messages])
+    expect(count_params).not_to include(%i[req messages])
 
-  def expect_keyword_compatible(method_name)
-    return unless described_class.method_defined?(method_name)
+    embed_params = described_class.instance_method(:embed).parameters
+    expect(embed_params).to include(%i[keyreq text])
+    expect(embed_params).not_to include(%i[req text])
+  end
 
-    params = described_class.instance_method(method_name).parameters
-    expect(params).not_to include(%i[req messages]), "#{method_name} still has positional messages"
-    expect(params).not_to include(%i[req text]), "#{method_name} still has positional text"
-    expect(params).not_to include(%i[req prompt]), "#{method_name} still has positional prompt"
+  it 'exposes no temperature kwarg outside Canonical::Params (05 O4)' do
+    %i[chat stream_chat complete count_tokens embed].each do |method_name|
+      params = described_class.instance_method(method_name).parameters
+      expect(params.filter_map { |type, name| %i[keyreq keyrest].include?(type) ? name : nil })
+        .not_to include(:temperature), "#{method_name} still takes a temperature: kwarg"
+    end
   end
 end
