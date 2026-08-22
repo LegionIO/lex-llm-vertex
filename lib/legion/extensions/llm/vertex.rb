@@ -3,8 +3,8 @@
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/vertex/provider'
 require 'legion/extensions/llm/vertex/version'
-require 'legion/extensions/llm/vertex/callable'
-require 'legion/extensions/llm/vertex/actors/discovery_refresh'
+require 'legion/extensions/llm/vertex/helpers/callable'
+require 'legion/extensions/llm/vertex/actors/discovery'
 
 module Legion
   module Extensions
@@ -60,6 +60,10 @@ module Legion
         def self.discover_default_instance(instances)
           cfg = CredentialSources.setting(:extensions, :llm, :vertex)
           return unless cfg.is_a?(Hash) && vertex_credentials_present?(cfg)
+          # enabled: false is a skip, not a credential: a disabled instance is
+          # never claimed (the discovery pipeline reads this method as the
+          # single claimable source).
+          return if instance_disabled?(cfg)
 
           instances[:settings] = normalize_instance_config(cfg).merge(tier: :cloud)
         end
@@ -73,9 +77,14 @@ module Legion
 
           named.each do |name, config|
             next unless config.is_a?(Hash) && vertex_credentials_present?(config)
+            next if instance_disabled?(config)
 
             instances[name.to_sym] = normalize_instance_config(config).merge(tier: :cloud)
           end
+        end
+
+        def self.instance_disabled?(cfg)
+          cfg[:enabled] == false || cfg['enabled'] == false
         end
 
         def self.vertex_credentials_present?(cfg)
@@ -104,8 +113,8 @@ module Legion
           Legion::Extensions::Llm::Configuration.register_provider_options(Provider.configuration_options)
         end
 
-        private_class_method :discover_default_instance, :discover_named_instances, :vertex_credentials_present?,
-                             :normalize_instance_config, :register_provider_options
+        private_class_method :discover_default_instance, :discover_named_instances, :instance_disabled?,
+                             :vertex_credentials_present?, :normalize_instance_config, :register_provider_options
 
         register_provider_options
       end

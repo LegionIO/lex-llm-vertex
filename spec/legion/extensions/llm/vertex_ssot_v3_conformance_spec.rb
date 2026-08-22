@@ -15,9 +15,9 @@ require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
 require 'legion/extensions/llm/fleet/worker_execution'
 require 'legion/extensions/llm/fleet/protocol'
-# The actor is required (not just stubbed around) so its real helpers back the
-# harness and its manual/shutdown logic is covered.
-require 'legion/extensions/llm/vertex/actors/discovery_refresh'
+# The discovery actor/runner are required (not just stubbed around) so the
+# runner's real identity helpers back the harness.
+require 'legion/extensions/llm/vertex/actors/discovery'
 
 # Builds a genuine Faraday error the way production raises it: a real request
 # through the raise_error middleware (the same middleware the provider
@@ -45,7 +45,8 @@ end
 # Records HTTP posts so the callable's REAL Provider render path can be driven
 # offline. The harness dispatch stubs intentionally bypass this path; the
 # raw-string model examples are what would catch a NoMethodError landmine if
-# the render path expected a Model::Info where the fleet passes a raw string.
+# the render path expected a rich model object where the fleet passes a
+# raw string.
 class VertexSsotFakeConnection
   attr_reader :posts
 
@@ -148,9 +149,10 @@ end
 # interface required by the shared conformance examples without touching
 # any external service. Defined inline per the conformance kit contract.
 #
-# The harness drives the PRODUCTION callable (VertexCallable) and the actor's
-# real identity helpers — no spec-local re-implementation of instance_id or
-# credential fingerprinting, and no dispatch stubs on the callable.
+# The harness drives the PRODUCTION callable (Helpers::Callable) and the
+# discovery runner's real identity helpers — no spec-local re-implementation
+# of instance_id or credential fingerprinting, and no dispatch stubs on the
+# callable.
 class VertexSsotHarness
   include RSpec::Mocks::ExampleMethods
   include VertexSsotEvidenceHelpers
@@ -179,27 +181,23 @@ class VertexSsotHarness
   def provider_family = :vertex
   def instance_configs = NAMED_INSTANCE_CONFIGS.values
 
-  def actor
-    @actor ||= Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh.new
-  end
-
   # The config NAME — the instance identity (the operator's instances.<name>
   # key; the fixture names stand in for operator names).
   def instance_id(instance_config:)
     NAMED_INSTANCE_CONFIGS.key(instance_config)
   end
 
-  # The actor's real secondary physical-id derivation (single source of
-  # truth — no duplicated fingerprint/ID logic in the harness).
+  # The discovery runner's real secondary physical-id derivation (single
+  # source of truth — no duplicated fingerprint/ID logic in the harness).
   def physical_id(instance_config:)
-    actor.send(:derive_physical_id, instance_cfg: instance_config)
+    Legion::Extensions::Llm::Vertex::Runners::Discovery.derive_physical_id(instance_cfg: instance_config)
   end
 
   # The PRODUCTION callable. Its wrapped Provider's dispatch operations are
   # intercepted (no network) so the fleet contract — callable signature,
   # delegation, kwargs passthrough — is what is under test.
   def build_callable(instance_config:)
-    callable = Legion::Extensions::Llm::Vertex::Actor::VertexCallable.new(
+    callable = Legion::Extensions::Llm::Vertex::Helpers::Callable.new(
       instance_cfg: instance_config, logger: Logger.new(File::NULL)
     )
     @dispatch_counts ||= {}
@@ -232,7 +230,7 @@ class VertexSsotHarness
   end
 
   def normalize_dispatch_error(error:)
-    callable = Legion::Extensions::Llm::Vertex::Actor::VertexCallable.new(
+    callable = Legion::Extensions::Llm::Vertex::Helpers::Callable.new(
       instance_cfg: instance_configs.first, logger: Logger.new(File::NULL)
     )
     outcome = callable.normalize_dispatch_error(error: error)
@@ -395,15 +393,12 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     it 'reproduces IDs after restart (identity is deterministic from inputs)' do
       config = ssot_harness.instance_configs[0]
       first_run = bring_up_instance(config)
-      first_offering_id = registry.snapshot.offerings_for(instance_key: first_run[:key]).first.offering_id
       first_lane_id = registry.snapshot.lanes_for(instance_key: first_run[:key]).first.lane_id
 
       registry.reset!
       second_run = bring_up_instance(config)
-      second_offering_id = registry.snapshot.offerings_for(instance_key: second_run[:key]).first.offering_id
       second_lane_id = registry.snapshot.lanes_for(instance_key: second_run[:key]).first.lane_id
 
-      expect(second_offering_id).to eq(first_offering_id)
       expect(second_lane_id).to eq(first_lane_id)
     end
   end
@@ -502,9 +497,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     end
   end
 
-  # --- VertexCallable direct contract -----------------------------------------
+  # --- Helpers::Callable direct contract ---------------------------------------
 
-  describe Legion::Extensions::Llm::Vertex::Actor::VertexCallable do
+  describe Legion::Extensions::Llm::Vertex::Helpers::Callable do
     let(:callable) do
       described_class.new(
         instance_cfg: ssot_harness.instance_configs[0],
@@ -757,12 +752,12 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     it 'does not require Legion::LLM (no reverse dependency on top-level llm module)' do
       project_root = File.expand_path('../../../..', __dir__)
       actor_file = File.read(
-        File.join(project_root, 'lib/legion/extensions/llm/vertex/actors/discovery_refresh.rb')
+        File.join(project_root, 'lib/legion/extensions/llm/vertex/actors/discovery.rb')
       )
       expect(actor_file).not_to match(/\bLegion::LLM\b/)
     end
 
-    it 'VertexCallable does not reference Legion::LLM' do
+    it 'Helpers::Callable does not reference Legion::LLM' do
       callable = ssot_harness.build_callable(instance_config: ssot_harness.instance_configs[0])
       outcome = callable.normalize_dispatch_error(error: RuntimeError.new('test'))
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)

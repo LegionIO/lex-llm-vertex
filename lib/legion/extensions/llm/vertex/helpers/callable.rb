@@ -8,7 +8,7 @@ module Legion
   module Extensions
     module Llm
       module Vertex
-        module Actor
+        module Helpers
           # Callable wrapper for a Vertex AI provider instance. Delegates the
           # fleet dispatch operations to a per-instance Vertex::Provider (real
           # HTTP dispatch; provider/Faraday errors propagate so
@@ -19,7 +19,7 @@ module Legion
           # message array positionally (WorkerExecution dispatch shape) and
           # the Selection-derived model as a bare String; folded wire params
           # become Canonical::Params at this boundary (05 O4).
-          class VertexCallable
+          class Callable
             # Keys the base Provider exposes as named kwargs for the
             # completion operations. Anything else the fleet passes (sampling
             # scalars, `temperature` — a Canonical::Params member, 05 O4) is

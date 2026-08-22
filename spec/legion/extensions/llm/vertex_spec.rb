@@ -101,19 +101,13 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
                                                                                    'predict'))
   end
 
-  it 'returns Model::Info objects from list_models with capabilities from STATIC_MODELS' do
+  it 'returns plain model strings from list_models in STATIC_MODELS order' do
     models = provider.list_models
 
-    expect(models.size).to eq(described_class::Provider::STATIC_MODELS.size)
-    flash = models.find { |m| m.id == 'gemini-2.5-flash' }
-    expect(flash).to be_a(Legion::Extensions::Llm::Model::Info)
-    expect(flash.provider).to eq(:vertex)
-    expect(flash.family).to eq('gemini')
-    expect(flash.name).to eq('gemini-flash')
-    expect(flash.capabilities).to include(:chat)
-
-    embed = models.find { |m| m.id == 'gemini-embedding-001' }
-    expect(embed.capabilities).to include(:embedding)
+    expect(models).to eq(
+      described_class::Provider::STATIC_MODELS.map { |entry| entry[:model] }
+    )
+    expect(models).to all(be_a(String))
   end
 
   describe '#discover_offerings (0.8.0 registry read path)' do
@@ -139,14 +133,19 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
 
     after { Legion::Extensions::Llm::Inventory::Registry.reset! }
 
-    it 'serves the activated inventory offerings for the instance (07 C5)' do
+    it 'serves the activated inventory lanes for the instance (07 C5)' do
       offerings = provider.discover_offerings
 
-      expect(offerings.map(&:model)).to eq([model])
+      # The draft supports every canonical operation, so the registry
+      # collapses it to one lane per distinct lane type (inference,
+      # embedding, image, audio) — one lane each for this model.
+      expect(offerings.length).to eq(4)
+      expect(offerings.map(&:model).uniq).to eq([model])
     end
 
     it 'filters by model' do
-      expect(provider.discover_offerings(model:).map(&:model)).to eq([model])
+      expect(provider.discover_offerings(model:).length).to eq(4)
+      expect(provider.discover_offerings(model:).map(&:model).uniq).to eq([model])
       expect(provider.discover_offerings(model: 'projects/x/locations/y/publishers/google/models/other')).to be_empty
     end
 
@@ -343,6 +342,22 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         .with(:extensions, :llm, :vertex).and_return(cfg)
 
       expect(described_class.discover_instances).not_to have_key(:bad)
+    end
+
+    it 'skips a disabled default instance (enabled: false is never claimed)' do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex)
+        .and_return({ project: 'my-project', access_token: 'tok-123', enabled: false })
+
+      expect(described_class.discover_instances).not_to have_key(:settings)
+    end
+
+    it 'skips a disabled named instance (enabled: false is never claimed)' do
+      cfg = { instances: { prod: { project: 'prod-proj', access_token: 'tok-prod', enabled: false } } }
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex).and_return(cfg)
+
+      expect(described_class.discover_instances).not_to have_key(:prod)
     end
   end
 

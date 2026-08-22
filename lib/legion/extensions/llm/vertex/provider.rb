@@ -130,7 +130,7 @@ module Legion
 
           def list_models(**_filters)
             log.info { 'listing available Vertex models from static catalog' }
-            STATIC_MODELS.map { |entry| model_info_from_static(entry) }.tap do |models|
+            STATIC_MODELS.map { |entry| entry[:model] }.tap do |models|
               log.info { "listed #{models.size} Vertex model(s)" }
             end
           end
@@ -533,34 +533,6 @@ module Legion
             }
           end
 
-          def model_info_from_static(entry)
-            caps = default_capabilities(entry[:model], api: entry.fetch(:api, :generate_content))
-            Legion::Extensions::Llm::Model::Info.new(
-              id: entry[:model],
-              name: entry[:alias] || entry[:model],
-              provider: :vertex,
-              family: entry[:model_family].to_s,
-              capabilities: caps.map(&:to_s),
-              metadata: {
-                publisher: entry[:publisher],
-                project: project,
-                location: location,
-                api: entry.fetch(:api, :generate_content)
-              }.compact
-            )
-          end
-
-          def model_info_from_offering(offering)
-            Legion::Extensions::Llm::Model::Info.new(
-              id: offering.model,
-              name: offering.metadata[:alias] || offering.model,
-              provider: :vertex,
-              family: offering.metadata[:model_family].to_s,
-              capabilities: offering.capabilities.map(&:to_s),
-              metadata: offering.metadata
-            )
-          end
-
           def publisher_parent
             "projects/#{project}/locations/#{location}/publishers/#{default_publisher}/models"
           end
@@ -576,27 +548,6 @@ module Legion
             return raw_predict_url(model:, stream:) unless generate_content_model?(model)
 
             stream ? stream_generate_content_url(model:) : generate_content_url(model:)
-          end
-
-          def default_capabilities(model, api:)
-            base_capabilities(model, api:) + policy_optional_capabilities(model, api:)
-          end
-
-          def base_capabilities(model, api:)
-            return %i[embedding] if Capabilities.embeddings?(model)
-
-            capabilities = %i[chat]
-            capabilities << :streaming if %i[generate_content raw_predict].include?(api)
-            capabilities
-          end
-
-          def policy_optional_capabilities(model, api:)
-            return [] if Capabilities.embeddings?(model)
-
-            caps = []
-            caps << :vision if Capabilities.vision?(model)
-            caps << :tools if generate_content_model?(model) && api == :generate_content
-            caps
           end
 
           def resolve_capability_policy(model, api:, metadata:, instance_id:)
