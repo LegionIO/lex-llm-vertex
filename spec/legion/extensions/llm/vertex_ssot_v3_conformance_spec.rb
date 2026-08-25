@@ -577,9 +577,8 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       it 'stream_chats through the real render path with a raw-string model' do
         # The base funnel streams IFF a block is given (08 F1: stream_chat is a
         # thin delegate; stream: block_given?).
-        # rubocop:disable Lint/EmptyBlock -- the block selects the stream path
+        # rubocop:disable-next Lint/EmptyBlock -- the block selects the stream path
         result = callable.stream_chat([message], model: 'gemini-2.5-flash') { |_chunk| }
-        # rubocop:enable Lint/EmptyBlock
 
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/' \
@@ -636,9 +635,8 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       end
 
       it 'folds wire scalars for stream_chat through the same boundary' do
-        # rubocop:disable Lint/EmptyBlock -- the block selects the stream path
+        # rubocop:disable-next Lint/EmptyBlock -- the block selects the stream path
         callable.stream_chat([message], model: 'gemini-2.5-flash', temperature: 0.5) { |_chunk| }
-        # rubocop:enable Lint/EmptyBlock
 
         payload = fake_connection.posts.first[1]
         expect(payload[:generationConfig]).to eq(temperature: 0.5)
