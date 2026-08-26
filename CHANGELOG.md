@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.5] - 2026-08-20
+
+0.8.0 conformance release against the lex-llm 0.8.0 contract cut.
+
+### Changed
+- Migrate the provider to the lex-llm 0.8.0 canonical contract: `chat`/`stream_chat` run through the base's single `complete` funnel (central `enforce_canonical_messages!` — the provider no longer re-implements the check), `render_payload` renders the Vertex wire FROM canonical values, `parse_completion_response` returns a `Canonical::Response`, and `build_chunk` yields `Canonical::Chunk` objects through the base `Streaming` module (real SSE chunk lifecycle ending in exactly one done chunk).
+- Enforce the canonical dispatch boundary end to end: the callable's chat, stream_chat, and count_tokens operations keep the shared `Provider#enforce_canonical_messages!` call at the exact-execution boundary, and the base funnel enforces centrally before rendering — plain-Hash messages (the 2026-08-19 incident class) raise a loud ArgumentError at both boundaries, and the dual-shape render-seam tolerance (provider-native `Message` acceptance) is gone.
+- `count_tokens` returns the provider's real `totalTokens` as an Integer and raises `NotImplementedError` for non-generateContent partner models (unsupported operations fail loud; the discovery writer publishes `:unsupported` operation evidence for them).
+- `embed` returns the 0.8.0 documented artifact `{ text:, model:, embedding:, usage: Canonical::Usage }`.
+- The provider's offering read path now serves activated inventory offerings from the SSOT registry snapshot (base `discover_offerings`, 07 C5); the discovery actor's writer remains the sole publication path.
+- Raise the `lex-llm` dependency floor to 0.8.0.
+
+### Added
+- Vertex wire `finishReason` spellings map to canonical stop reasons via `StopReasonMapping#stop_reason_map_additions`; sync responses and rawPredict partner responses carry `stop_reason`.
+- Vertex `thought` parts surface as a canonical `Thinking` member (content + `thoughtSignature`) in sync responses and as `thinking_delta` chunks in streams, instead of being dropped.
+- The fleet worker runner dispatches protocol-v3 exact-only envelopes against the SSOT registry (`ProviderResponder.call` with `registry:`).
+- Conformance: the ssot_v3 spec runs the shared kit's B1 (central canonical enforcement) and B2 (canonical outputs, asserted by type) groups against the real callable boundary, and the raw-string model dispatch examples now feed canonical messages through the real render path.
+- Keep a local-tree `lex-llm` path dependency in the test group so the adjacent checkout resolves against the unreleased 0.8.0 cut during development.
+
+### Removed
+- Legacy type construction in the parse paths: `Llm::Message` / `Llm::Chunk` / `Llm::ToolCall` from completion parsing, `Llm::Content` / `Llm::Content::Raw` handling in the content renderer, and `Llm::Embedding` from the embed path (replaced by `Canonical::*` types and the documented embedding artifact).
+- The provider-native offering production path: the `discover_offerings` override, `offering_for` / `static_offerings` / `offering_from_live_model` / `offering_from_model` / `build_offering` (the `Routing::ModelOffering` production site), and the now-dead offering-feed helpers.
+- The discovery actor's `Inventory::ScopedRefresher::LegacyCoordinatorAdapter` wiring (the file and the mixed-version window it served are deleted in lex-llm 0.8.0); the Publisher is a direct Registry wrapper.
+
 ## [0.3.4] - 2026-08-19
 
 ### Changed

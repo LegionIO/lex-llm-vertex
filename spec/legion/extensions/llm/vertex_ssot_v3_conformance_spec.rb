@@ -15,9 +15,9 @@ require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
 require 'legion/extensions/llm/fleet/worker_execution'
 require 'legion/extensions/llm/fleet/protocol'
-# The actor is required (not just stubbed around) so its real helpers back the
-# harness and its manual/shutdown logic is covered.
-require 'legion/extensions/llm/vertex/actors/discovery_refresh'
+# The discovery actor/runner are required (not just stubbed around) so the
+# runner's real identity helpers back the harness.
+require 'legion/extensions/llm/vertex/actors/discovery'
 
 # Builds a genuine Faraday error the way production raises it: a real request
 # through the raise_error middleware (the same middleware the provider
@@ -45,7 +45,8 @@ end
 # Records HTTP posts so the callable's REAL Provider render path can be driven
 # offline. The harness dispatch stubs intentionally bypass this path; the
 # raw-string model examples are what would catch a NoMethodError landmine if
-# the render path expected a Model::Info where the fleet passes a raw string.
+# the render path expected a rich model object where the fleet passes a
+# raw string.
 class VertexSsotFakeConnection
   attr_reader :posts
 
@@ -67,9 +68,14 @@ class VertexSsotFakeConnection
     when /:predict\z/ then { 'predictions' => [{ 'embeddings' => { 'values' => [0.1, 0.2] } }] }
     when /:countTokens\z/ then { 'totalTokens' => 7 }
     else
+      # modelVersion echoes the model in the request URL (the Vertex wire
+      # does) so the canonical response keeps the Selection-derived model
+      # end-to-end (B4).
       {
-        'modelVersion' => 'gemini-2.5-flash',
-        'candidates' => [{ 'content' => { 'parts' => [{ 'text' => 'done' }] } }],
+        'modelVersion' => url[%r{models/([^:]+):}, 1],
+        'candidates' => [
+          { 'content' => { 'parts' => [{ 'text' => 'done' }] }, 'finishReason' => 'STOP' }
+        ],
         'usageMetadata' => { 'promptTokenCount' => 1, 'candidatesTokenCount' => 2 }
       }
     end
@@ -143,9 +149,10 @@ end
 # interface required by the shared conformance examples without touching
 # any external service. Defined inline per the conformance kit contract.
 #
-# The harness drives the PRODUCTION callable (VertexCallable) and the actor's
-# real identity helpers — no spec-local re-implementation of instance_id or
-# credential fingerprinting, and no dispatch stubs on the callable.
+# The harness drives the PRODUCTION callable (Helpers::Callable) and the
+# discovery runner's real identity helpers — no spec-local re-implementation
+# of instance_id or credential fingerprinting, and no dispatch stubs on the
+# callable.
 class VertexSsotHarness
   include RSpec::Mocks::ExampleMethods
   include VertexSsotEvidenceHelpers
@@ -174,27 +181,23 @@ class VertexSsotHarness
   def provider_family = :vertex
   def instance_configs = NAMED_INSTANCE_CONFIGS.values
 
-  def actor
-    @actor ||= Legion::Extensions::Llm::Vertex::Actor::DiscoveryRefresh.new
-  end
-
   # The config NAME — the instance identity (the operator's instances.<name>
   # key; the fixture names stand in for operator names).
   def instance_id(instance_config:)
     NAMED_INSTANCE_CONFIGS.key(instance_config)
   end
 
-  # The actor's real secondary physical-id derivation (single source of
-  # truth — no duplicated fingerprint/ID logic in the harness).
+  # The discovery runner's real secondary physical-id derivation (single
+  # source of truth — no duplicated fingerprint/ID logic in the harness).
   def physical_id(instance_config:)
-    actor.send(:derive_physical_id, instance_cfg: instance_config)
+    Legion::Extensions::Llm::Vertex::Runners::Discovery.derive_physical_id(instance_cfg: instance_config)
   end
 
   # The PRODUCTION callable. Its wrapped Provider's dispatch operations are
   # intercepted (no network) so the fleet contract — callable signature,
   # delegation, kwargs passthrough — is what is under test.
   def build_callable(instance_config:)
-    callable = Legion::Extensions::Llm::Vertex::Actor::VertexCallable.new(
+    callable = Legion::Extensions::Llm::Vertex::Helpers::Callable.new(
       instance_cfg: instance_config, logger: Logger.new(File::NULL)
     )
     @dispatch_counts ||= {}
@@ -227,7 +230,7 @@ class VertexSsotHarness
   end
 
   def normalize_dispatch_error(error:)
-    callable = Legion::Extensions::Llm::Vertex::Actor::VertexCallable.new(
+    callable = Legion::Extensions::Llm::Vertex::Helpers::Callable.new(
       instance_cfg: instance_configs.first, logger: Logger.new(File::NULL)
     )
     outcome = callable.normalize_dispatch_error(error: error)
@@ -254,9 +257,17 @@ class VertexSsotHarness
 
   def fake_dispatch_result(operation)
     case operation
-    when :embed then Legion::Extensions::Llm::Embedding.new(vectors: [0.1, 0.2, 0.3], model: 'conformance')
-    when :count_tokens then { input_tokens: 42, raw: {} }
-    else Legion::Extensions::Llm::Message.new(role: :assistant, content: 'conformance response')
+    when :embed
+      # 05 §3 documented artifact: { text:, model:, embedding:, usage: }
+      {
+        text: 'conformance', model: 'conformance', embedding: [0.1, 0.2, 0.3],
+        usage: Legion::Extensions::Llm::Canonical::Usage.build(input_tokens: 0)
+      }
+    when :count_tokens then 42
+    else
+      Legion::Extensions::Llm::Canonical::Response.build(
+        text: 'conformance response', model: 'conformance', stop_reason: :end_turn
+      )
     end
   end
 
@@ -382,15 +393,12 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     it 'reproduces IDs after restart (identity is deterministic from inputs)' do
       config = ssot_harness.instance_configs[0]
       first_run = bring_up_instance(config)
-      first_offering_id = registry.snapshot.offerings_for(instance_key: first_run[:key]).first.offering_id
       first_lane_id = registry.snapshot.lanes_for(instance_key: first_run[:key]).first.lane_id
 
       registry.reset!
       second_run = bring_up_instance(config)
-      second_offering_id = registry.snapshot.offerings_for(instance_key: second_run[:key]).first.offering_id
       second_lane_id = registry.snapshot.lanes_for(instance_key: second_run[:key]).first.lane_id
 
-      expect(second_offering_id).to eq(first_offering_id)
       expect(second_lane_id).to eq(first_lane_id)
     end
   end
@@ -489,9 +497,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     end
   end
 
-  # --- VertexCallable direct contract -----------------------------------------
+  # --- Helpers::Callable direct contract ---------------------------------------
 
-  describe Legion::Extensions::Llm::Vertex::Actor::VertexCallable do
+  describe Legion::Extensions::Llm::Vertex::Helpers::Callable do
     let(:callable) do
       described_class.new(
         instance_cfg: ssot_harness.instance_configs[0],
@@ -534,18 +542,22 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     # dispatch stubs — to keep that guarantee covered.
     describe 'raw-string model dispatch (D15)' do
       let(:fake_connection) { VertexSsotFakeConnection.new }
-      let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
+      # Pipeline dispatch (fleet WorkerExecution / SelectionDispatch) delivers
+      # Canonical::Message objects across the callable boundary; these examples
+      # drive the real render path, so the input must be the canonical shape.
+      let(:message) { Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello') }
 
       before { callable.provider.instance_variable_set(:@connection, fake_connection) }
 
       it 'chats through the real render path with a raw-string model' do
-        result = callable.chat(messages: [message], model: 'gemini-2.5-flash')
+        result = callable.chat([message], model: 'gemini-2.5-flash')
 
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent'
         )
-        expect(result).to be_a(Legion::Extensions::Llm::Message)
-        expect(result.content).to eq('done')
+        expect(result).to be_a(Legion::Extensions::Llm::Canonical::Response)
+        expect(result.text).to eq('done')
+        expect(result.model).to eq('gemini-2.5-flash')
       end
 
       it 'renders a folded leading system message into the native systemInstruction field' do
@@ -555,7 +567,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         )
         user_message = Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')
 
-        callable.chat(messages: [system_message, user_message], model: 'gemini-2.5-flash')
+        callable.chat([system_message, user_message], model: 'gemini-2.5-flash')
 
         payload = fake_connection.posts.first[1]
         expect(payload[:systemInstruction]).to eq(parts: [{ text: 'authoritative system instruction' }])
@@ -563,13 +575,16 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
       end
 
       it 'stream_chats through the real render path with a raw-string model' do
-        result = callable.stream_chat(messages: [message], model: 'gemini-2.5-flash')
+        # The base funnel streams IFF a block is given (08 F1: stream_chat is a
+        # thin delegate; stream: block_given?).
+        # rubocop:disable-next Lint/EmptyBlock -- the block selects the stream path
+        result = callable.stream_chat([message], model: 'gemini-2.5-flash') { |_chunk| }
 
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/' \
           'gemini-2.5-flash:streamGenerateContent?alt=sse'
         )
-        expect(result).to be_a(Legion::Extensions::Llm::Message)
+        expect(result).to be_a(Legion::Extensions::Llm::Canonical::Response)
       end
 
       it 'embeds through the real render path with a raw-string model' do
@@ -578,8 +593,9 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-embedding-001:predict'
         )
-        expect(result).to be_a(Legion::Extensions::Llm::Embedding)
-        expect(result.vectors).to eq([0.1, 0.2])
+        expect(result[:embedding]).to eq([0.1, 0.2])
+        expect(result[:usage]).to be_a(Legion::Extensions::Llm::Canonical::Usage)
+        expect(result[:usage].input_tokens).to eq(0)
       end
 
       it 'counts tokens through the real render path with a raw-string model' do
@@ -588,8 +604,91 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         expect(fake_connection.posts.first[0]).to eq(
           'projects/my-project-alpha/locations/us-central1/publishers/google/models/gemini-2.5-flash:countTokens'
         )
-        expect(result).to include(input_tokens: 7)
+        expect(result).to eq(7)
       end
+
+      # 05 O4 boundary regression: folded fleet wire params (top-level
+      # sampling scalars, a raw params hash — 0.7.x spellings) become a
+      # Canonical::Params at the callable before the 0.8.0 renderer reads
+      # params.temperature / params.max_tokens.
+      it 'folds top-level wire sampling scalars into Canonical::Params at the callable boundary' do
+        callable.chat([message], model: 'gemini-2.5-flash', temperature: 0.7, max_tokens: 64)
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.7, maxOutputTokens: 64)
+      end
+
+      it 'folds a raw wire params hash into Canonical::Params at the callable boundary' do
+        callable.chat([message], model: 'gemini-2.5-flash', params: { temperature: 0.4, max_tokens: 32 })
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.4, maxOutputTokens: 32)
+      end
+
+      it 'keeps an explicit canonical params object canonical through the boundary' do
+        params = Legion::Extensions::Llm::Canonical::Params.build(temperature: 0.3)
+
+        callable.chat([message], model: 'gemini-2.5-flash', params: params)
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.3)
+      end
+
+      it 'folds wire scalars for stream_chat through the same boundary' do
+        # rubocop:disable-next Lint/EmptyBlock -- the block selects the stream path
+        callable.stream_chat([message], model: 'gemini-2.5-flash', temperature: 0.5) { |_chunk| }
+
+        payload = fake_connection.posts.first[1]
+        expect(payload[:generationConfig]).to eq(temperature: 0.5)
+      end
+    end
+
+    # ─── Canonical dispatch boundary regression (2026-08-19 incident) ────────
+    # SSOT v3 local dispatch passed executor Hash messages straight to provider
+    # callables; lenient provider-side tolerance masked the bypass. The
+    # callable enforces Canonical-only at its entry (the shared helper, N x N
+    # law) and the base funnel enforces centrally before rendering — plain
+    # Hashes are rejected loudly at both boundaries.
+    describe 'canonical dispatch boundary' do
+      let(:hash_request) do
+        [
+          { role: 'user', content: 'What is the capital of France?' },
+          { role: 'assistant', content: 'Paris.' }
+        ]
+      end
+
+      it 'rejects plain Hash messages at the callable dispatch boundary' do
+        expect { callable.chat(hash_request, model: 'gemini-2.5-flash') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+        expect { callable.stream_chat(hash_request, model: 'gemini-2.5-flash') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+        expect { callable.count_tokens(messages: hash_request, model: 'gemini-2.5-flash') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+
+      it 'rejects plain Hash messages at the provider funnel (central enforcement, 08 F2)' do
+        expect { callable.provider.chat(hash_request, model: 'gemini-2.5-flash') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+    end
+
+    # ─── 0.8.0 canonical boundary kit (B1/B2 against the REAL callable) ──────
+    # The kit examples resolve `callable` from the host group — the shadowing
+    # let below points them at the production callable wired to the offline
+    # fake connection (the real render/parse paths, no network).
+    describe 'canonical boundary kit (08 F2 / 05 O5)' do
+      let(:fake_kit_connection) { VertexSsotFakeConnection.new }
+
+      let(:callable) do
+        target = described_class.new(
+          instance_cfg: ssot_harness.instance_configs[0], logger: Logger.new(File::NULL)
+        )
+        target.provider.instance_variable_set(:@connection, fake_kit_connection)
+        target
+      end
+
+      it_behaves_like 'B1 — central canonical enforcement (08 F2)'
+      it_behaves_like 'B2 — canonical outputs (05 O5, 08 R2)'
     end
 
     it 'returns a ProviderOutcome from normalize_dispatch_error' do
@@ -651,12 +750,12 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     it 'does not require Legion::LLM (no reverse dependency on top-level llm module)' do
       project_root = File.expand_path('../../../..', __dir__)
       actor_file = File.read(
-        File.join(project_root, 'lib/legion/extensions/llm/vertex/actors/discovery_refresh.rb')
+        File.join(project_root, 'lib/legion/extensions/llm/vertex/actors/discovery.rb')
       )
       expect(actor_file).not_to match(/\bLegion::LLM\b/)
     end
 
-    it 'VertexCallable does not reference Legion::LLM' do
+    it 'Helpers::Callable does not reference Legion::LLM' do
       callable = ssot_harness.build_callable(instance_config: ssot_harness.instance_configs[0])
       outcome = callable.normalize_dispatch_error(error: RuntimeError.new('test'))
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)

@@ -24,6 +24,10 @@ Metrics/PerceivedComplexity:
   Enabled: false
 Metrics/ClassLength:
   Enabled: false
+# default ModuleLength (100) is too strict for a discovery runner carrying the
+# full evidence-building surface. Length is still bounded (Max 350).
+Metrics/ModuleLength:
+  Max: 350
 RSpec/MultipleExpectations:
   Enabled: false
 RSpec/ExampleLength:

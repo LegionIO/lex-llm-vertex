@@ -2,7 +2,6 @@
 
 require 'bundler/setup'
 require 'logger'
-require 'stringio'
 
 require 'legion/extensions/llm'
 require 'legion/settings'
@@ -26,16 +25,27 @@ module Legion
 
     module Helpers
       unless const_defined?(:Lex, false)
-        # Stand-in for the LegionIO Lex helper: the REAL settings resolution
-        # from legion-settings >= 1.4.2, which resolves this two-segment
-        # extension to the nested path
+        # Functional stand-in for the LegionIO Lex helper, not an empty one:
+        # the shared Discovery::Pipeline and the base Discovery::Actor
+        # `include` it, and the provider runner relies on the real
+        # log/handle_exception/settings the host helper provides.
+        # `handle_exception` (from Legion::Logging::Helper) logs and does NOT
+        # re-raise; `settings` (from Legion::Settings::Helper, real resolution
+        # from legion-settings >= 1.4.2) resolves this two-segment extension
+        # to the nested path
         # Legion::Settings[:extensions][:llm][:vertex] (the same path
-        # CredentialSources.setting(:extensions, :llm, :vertex) reads), so the
-        # actor's settings reads/writes exercise genuine resolution.
-        # log/handle_exception come from the real
-        # Legion::Logging::Helper, which the actors include after Lex.
+        # CredentialSources.setting(:extensions, :llm, :vertex) reads) —
+        # writable, which is how specs drive the health write-back and the
+        # publish-time weight settings.
         module Lex
+          include Legion::Logging::Helper
           include Legion::Settings::Helper
+
+          # Mirror the real Lex: module-level consumers (the Runners::*
+          # modules) get settings/log/handle_exception on the module itself.
+          def self.included(base)
+            base.extend(base) if base.instance_of?(Module) && !base.instance_of?(Class)
+          end
         end
       end
     end
@@ -49,39 +59,33 @@ Legion::Settings[:extensions] ||= {}
 
 require 'legion/extensions/llm/vertex'
 
-# Load the SSOT v3 shared conformance examples from the lex-llm gem's spec/
-# directory (spec/ ships in the gem but is NOT on the load path). Only the
-# shared examples file — the kit directory's own self-test specs belong to
-# lex-llm's suite, not this provider's.
+# Load the shared conformance examples from the lex-llm gem's spec/ directory
+# (spec/ ships in the gem but is NOT on the load path). Only the shared
+# examples files — the kit directory's own self-test specs belong to lex-llm's
+# suite, not this provider's:
+#   * ssot_provider_examples.rb — the SSOT v3 registry/fleet adapter group
+#   * ssot_contract_examples.rb — the 0.8.0 boundary (B), fleet (F), and
+#     registry (R) groups the conformance spec runs against the real callable
 if Gem.loaded_specs['lex-llm']
-  examples_path = File.join(
+  kit_dir = File.join(
     Gem.loaded_specs['lex-llm'].full_gem_path,
-    'spec/legion/extensions/llm/conformance/ssot_provider_examples.rb'
+    'spec/legion/extensions/llm/conformance'
   )
-  require examples_path
+  require File.join(kit_dir, 'ssot_provider_examples.rb')
+  require File.join(kit_dir, 'ssot_contract_examples.rb')
 end
 
-if defined?(Legion::Logging)
-  # Ruby 4 treats File::NULL passed as a String as a logger with no logdev;
-  # legion-logging then deliberately falls back to stdout. Keep a real IO
-  # sink so the required JSON-to-file RSpec run remains zero-stdout.
-  null_logger = Logger.new(StringIO.new)
-  null_logger.level = Logger::DEBUG
-  Legion::Logging.instance_variable_set(:@log, null_logger)
-  Legion::Logging.instance_variable_set(
-    :@current_settings,
-    {
-      level: :debug,
-      format: :text,
-      async: false,
-      trace: false,
-      trace_size: 0,
-      extended: false,
-      log_file: nil,
-      log_stdout: false,
-      include_pid: false,
-      color: false
-    }.freeze
-  )
-  Legion::Logging.instance_variable_set(:@configuration_generation, Legion::Logging.configuration_generation + 1)
-end
+# Sink all logging to /dev/null (log_stdout: false explicitly suppresses the
+# stdout sink) so the required JSON-to-file RSpec run remains zero-stdout.
+Legion::Logging.setup(
+  level: 'debug',
+  format: :text,
+  async: false,
+  trace: false,
+  trace_size: 0,
+  extended: false,
+  log_file: File::NULL,
+  log_stdout: false,
+  include_pid: false,
+  color: false
+)

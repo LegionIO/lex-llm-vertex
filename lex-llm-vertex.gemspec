@@ -27,5 +27,8 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'legion-logging', '>= 1.3.2'
   spec.add_dependency 'legion-settings', '>= 1.4.2'
   spec.add_dependency 'legion-transport', '>= 1.4.14'
-  spec.add_dependency 'lex-llm', '>= 0.7.6'
+  # 0.8.0 is the canonical contract cut: base complete funnel with central
+  # canonical enforcement, Canonical::* types, SSOT registry writer path, and
+  # the fleet v3 exact-execution responder the two-file wiring dispatches to.
+  spec.add_dependency 'lex-llm', '>= 0.8.0'
 end

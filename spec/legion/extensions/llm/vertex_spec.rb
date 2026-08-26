@@ -27,13 +27,19 @@ class FakeVertexConnection
     return token_response if url.end_with?(':countTokens')
     return raw_predict_response if url.include?(':rawPredict') || url.include?(':streamRawPredict')
 
-    generate_content_response
+    generate_content_response(url)
   end
 
-  def generate_content_response
+  # The Vertex wire echoes the served model back — modelVersion mirrors the
+  # model in the request URL, so the canonical response keeps the
+  # Selection-derived model end-to-end (B4).
+  def generate_content_response(url)
     {
-      'modelVersion' => 'gemini-2.5-flash',
-      'candidates' => [{ 'content' => { 'parts' => [{ 'text' => 'done' }] } }],
+      'modelVersion' => url[%r{models/([^:]+):}, 1],
+      'candidates' => [{
+        'content' => { 'parts' => [{ 'text' => 'done' }] },
+        'finishReason' => 'STOP'
+      }],
       'usageMetadata' => { 'promptTokenCount' => 3, 'candidatesTokenCount' => 5 }
     }
   end
@@ -41,7 +47,7 @@ class FakeVertexConnection
   def raw_predict_response
     {
       'model' => 'mistral-medium-3',
-      'choices' => [{ 'message' => { 'content' => 'raw done' } }],
+      'choices' => [{ 'message' => { 'content' => 'raw done' }, 'finish_reason' => 'stop' }],
       'usage' => { 'prompt_tokens' => 2, 'completion_tokens' => 4 }
     }
   end
@@ -60,10 +66,10 @@ class FakeVertexConnection
 end
 
 RSpec.describe Legion::Extensions::Llm::Vertex do
+  let(:canonical) { Legion::Extensions::Llm::Canonical }
   let(:provider) { described_class::Provider.new(Legion::Extensions::Llm.config) }
   let(:connection) { FakeVertexConnection.new }
-  let(:message) { Legion::Extensions::Llm::Message.new(role: :user, content: 'hello') }
-  let(:model) { Legion::Extensions::Llm::Model::Info.new(id: 'gemini-2.5-flash', provider: :vertex) }
+  let(:message) { canonical::Message.build(role: :user, content: 'hello') }
 
   before do
     Legion::Extensions::Llm.configure do |config|
@@ -82,7 +88,7 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     expect(settings[:provider_family]).to eq(:vertex)
     expect(instance.dig(:provider, :location)).to eq('us-central1')
     expect(instance[:transport]).to eq(:http)
-    expect(instance.dig(:fleet, :respond_to_requests)).to be false
+    expect(instance.dig(:fleet, :respond_to_requests)).to be(false)
   end
 
   it 'exposes project and location aware endpoint helpers' do
@@ -95,61 +101,72 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
                                                                                    'predict'))
   end
 
-  it 'returns Model::Info objects from list_models with capabilities from STATIC_MODELS' do
+  it 'returns plain model strings from list_models in STATIC_MODELS order' do
     models = provider.list_models
 
-    expect(models.size).to eq(described_class::Provider::STATIC_MODELS.size)
-    flash = models.find { |m| m.id == 'gemini-2.5-flash' }
-    expect(flash).to be_a(Legion::Extensions::Llm::Model::Info)
-    expect(flash.provider).to eq(:vertex)
-    expect(flash.family).to eq('gemini')
-    expect(flash.name).to eq('gemini-flash')
-    expect(flash.capabilities).to include(:chat)
-
-    embed = models.find { |m| m.id == 'gemini-embedding-001' }
-    expect(embed.capabilities).to include(:embedding)
-  end
-
-  it 'maps offline offerings with Vertex family, model family, and instance location metadata' do
-    offerings = provider.discover_offerings(live: false)
-    gemini = offerings.find { |offering| offering.metadata[:alias] == 'gemini-flash' }
-    mistral = offerings.find { |offering| offering.metadata[:model_family] == :mistral }
-    embed = offerings.find(&:embedding?)
-
-    expect(gemini.to_h).to include(provider_family: :vertex, instance_id: :default)
-    expect(gemini.model).to eq(resource_name('google', 'gemini-2.5-flash'))
-    expect(gemini.metadata).to include(model_family: :gemini, project: 'test-project', location: 'us-central1')
-    expect(mistral.model).to eq(resource_name('mistralai', 'mistral-medium-3'))
-    expect(embed.usage_type).to eq(:embedding)
-  end
-
-  it 'accepts canonical aliases and explicit model families for offerings' do
-    offering = provider.offering_for(model: 'gemini-flash', model_family: :gemini, instance_id: :central)
-
-    expect(offering.to_h).to include(provider_family: :vertex, instance_id: :central,
-                                     model: resource_name('google', 'gemini-2.5-flash'))
-    expect(offering.metadata).to include(model_family: :gemini, alias: 'gemini-flash')
-  end
-
-  it 'uses provider instance transport and tier in offerings' do
-    configured = described_class::Provider.new(
-      vertex_project: 'test-project',
-      vertex_location: 'us-central1',
-      vertex_access_token: 'token',
-      transport: :rabbitmq,
-      tier: :fleet
+    expect(models).to eq(
+      described_class::Provider::STATIC_MODELS.map { |entry| entry[:model] }
     )
-    offering = configured.offering_for(model: 'gemini-flash', model_family: :gemini)
-
-    expect(offering.to_h).to include(transport: :rabbitmq, tier: :fleet)
+    expect(models).to all(be_a(String))
   end
 
-  it 'preserves full Vertex resource names supplied by callers' do
-    resource = resource_name('anthropic', 'claude-sonnet-4-5')
-    offering = provider.offering_for(model: resource, model_family: :anthropic)
+  describe '#discover_offerings (0.8.0 registry read path)' do
+    let(:model) { 'projects/test-project/locations/us-central1/publishers/google/models/gemini-2.5-flash' }
 
-    expect(offering.model).to eq(resource)
-    expect(offering.metadata).to include(model_family: :anthropic, publisher: 'anthropic', api: :raw_predict)
+    before do
+      registry = Legion::Extensions::Llm::Inventory::Registry
+      key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+        provider_family: :vertex, instance_id: 'default'
+      )
+      registry.reset!
+      coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
+        instance_key: key, enqueue: ->(**) { true }
+      )
+      token = registry.claim_instance(instance_key: key, callable: Object.new,
+                                      probe_request_handle: coordinator)
+      probe = registry.readiness_probe_started(instance_key: key, publisher_token: token)
+      registry.activate_instance_snapshot(
+        publisher_token: token, instance_key: key,
+        offerings: [build_read_path_draft(model)], sequence: 0, probe_token: probe
+      )
+    end
+
+    after { Legion::Extensions::Llm::Inventory::Registry.reset! }
+
+    it 'serves the activated inventory lanes for the instance (07 C5)' do
+      offerings = provider.discover_offerings
+
+      # The draft supports every canonical operation, so the registry
+      # collapses it to one lane per distinct lane type (inference,
+      # embedding, image, audio) — one lane each for this model.
+      expect(offerings.length).to eq(4)
+      expect(offerings.map(&:model).uniq).to eq([model])
+    end
+
+    it 'filters by model' do
+      expect(provider.discover_offerings(model:).length).to eq(4)
+      expect(provider.discover_offerings(model:).map(&:model).uniq).to eq([model])
+      expect(provider.discover_offerings(model: 'projects/x/locations/y/publishers/google/models/other')).to be_empty
+    end
+
+    def build_read_path_draft(model)
+      now = Time.now.freeze
+      ops = Legion::Extensions::Llm::Taxonomies::OPERATIONS.to_h do |operation|
+        [operation, Legion::Extensions::Llm::Inventory::OperationEvidence.new(
+          operation: operation, status: :supported, source: :provider_implementation, observed_at: now
+        )]
+      end
+      unknown = -> { Legion::Extensions::Llm::Inventory::ValueEvidence.new(status: :unknown, source: :absent) }
+
+      Legion::Extensions::Llm::Inventory::OfferingDraft.new(
+        provider_native_key: 'gemini-2.5-flash', model: model, tier: :cloud,
+        operation_evidence: ops, capability_evidence: {},
+        context_evidence: unknown.call, max_output_evidence: unknown.call,
+        embedding_dimensions_evidence: unknown.call, model_revision_evidence: unknown.call,
+        tokenizer_evidence: unknown.call, quota_domains: {}, metadata: { raw_model: 'gemini-2.5-flash' },
+        publication_source: :provider_static_catalog
+      )
+    end
   end
 
   it 'reports non-live health without Vertex calls' do
@@ -158,22 +175,15 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
     expect(connection.gets).to be_empty
   end
 
-  it 'builds live offerings from publisher model listings' do
-    offerings = provider.discover_offerings(live: true)
-
-    expect(connection.gets).to eq(['projects/test-project/locations/us-central1/publishers/google/models'])
-    expect(offerings.first.model).to eq(resource_name('google', 'gemini-2.5-flash'))
-    expect(offerings.first.health).to include(provider: :vertex, ready: true)
-  end
-
   it 'returns readiness metadata including health status' do
     readiness = provider.readiness(live: true)
 
     expect(readiness).to include(provider: :vertex, ready: true, live: true, local: false, remote: true)
   end
 
-  it 'renders generateContent requests and parses assistant responses' do
-    result = provider.chat(messages: [message], model: model, temperature: 0.2)
+  it 'renders generateContent requests and parses canonical assistant responses' do
+    result = provider.chat([message], model: 'gemini-2.5-flash',
+                                      params: canonical::Params.build(temperature: 0.2))
 
     expect(connection.posts.first).to eq(
       [
@@ -184,11 +194,14 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         }
       ]
     )
-    expect([result.content, result.input_tokens, result.output_tokens]).to eq(['done', 3, 5])
+    expect(result).to be_a(canonical::Response)
+    expect([result.text, result.stop_reason, result.model]).to eq(['done', :end_turn, 'gemini-2.5-flash'])
+    expect([result.usage.input_tokens, result.usage.output_tokens]).to eq([3, 5])
   end
 
   it 'renders rawPredict-style partner requests without inventing provider-specific endpoints' do
-    result = provider.chat(messages: [message], model: 'mistral-medium', max_tokens: 64)
+    result = provider.chat([message], model: 'mistral-medium',
+                                      params: canonical::Params.build(max_tokens: 64))
 
     expect(connection.posts.first).to eq(
       [
@@ -196,11 +209,13 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         { model: 'mistral-medium-3', messages: [{ role: 'user', content: 'hello' }], max_tokens: 64, stream: false }
       ]
     )
-    expect([result.content, result.input_tokens, result.output_tokens]).to eq(['raw done', 2, 4])
+    expect(result).to be_a(canonical::Response)
+    expect([result.text, result.model]).to eq(['raw done', 'mistral-medium-3'])
+    expect([result.usage.input_tokens, result.usage.output_tokens]).to eq([2, 4])
   end
 
   it 'counts tokens through the Vertex countTokens publisher model shape' do
-    result = provider.count_tokens(messages: [message], model: model)
+    result = provider.count_tokens(messages: [message], model: 'gemini-2.5-flash')
 
     expect(connection.posts.first).to eq(
       [
@@ -208,13 +223,13 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         { contents: [{ role: 'user', parts: [{ text: 'hello' }] }] }
       ]
     )
-    expect(result).to include(input_tokens: 7)
+    expect(result).to eq(7)
   end
 
-  it 'returns token-counting metadata for non-generateContent partner models' do
-    result = provider.count_tokens(messages: [message], model: 'mistral-medium')
-
-    expect(result).to include(supported: false, provider: :vertex, reason: /countTokens/)
+  it 'fails loud for token counting on non-generateContent partner models' do
+    expect do
+      provider.count_tokens(messages: [message], model: 'mistral-medium')
+    end.to raise_error(NotImplementedError, /not standardized/)
     expect(connection.posts).to be_empty
   end
 
@@ -231,7 +246,12 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         }
       ]
     )
-    expect([embedding.vectors, embedding.input_tokens]).to eq([[0.1, 0.2], 4])
+    # 05 §3 documented artifact: { text:, model:, embedding:, usage: }
+    expect(embedding[:text]).to eq('hello')
+    expect(embedding[:model]).to eq('gemini-embedding-001')
+    expect(embedding[:embedding]).to eq([0.1, 0.2])
+    expect(embedding[:usage]).to be_a(canonical::Usage)
+    expect(embedding[:usage].input_tokens).to eq(4)
   end
 
   it 'does not invent an embedding body for non-embedding models' do
@@ -322,6 +342,22 @@ RSpec.describe Legion::Extensions::Llm::Vertex do
         .with(:extensions, :llm, :vertex).and_return(cfg)
 
       expect(described_class.discover_instances).not_to have_key(:bad)
+    end
+
+    it 'skips a disabled default instance (enabled: false is never claimed)' do
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex)
+        .and_return({ project: 'my-project', access_token: 'tok-123', enabled: false })
+
+      expect(described_class.discover_instances).not_to have_key(:settings)
+    end
+
+    it 'skips a disabled named instance (enabled: false is never claimed)' do
+      cfg = { instances: { prod: { project: 'prod-proj', access_token: 'tok-prod', enabled: false } } }
+      allow(Legion::Extensions::Llm::CredentialSources).to receive(:setting)
+        .with(:extensions, :llm, :vertex).and_return(cfg)
+
+      expect(described_class.discover_instances).not_to have_key(:prod)
     end
   end
 
